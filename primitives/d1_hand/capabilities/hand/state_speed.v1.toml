@@ -1,0 +1,10 @@
+# Read current joint speeds as a continuous ROS 2 topic.
+# Output: float64[] speed (JointPositions msg — reused)
+[contract]
+id      = "beingbeyond/primitive/hand/state_speed"
+version = "1"
+kind    = "primitive"
+idl     = "hand/msg/JointPositions.msg"
+
+[mode]
+type = "topic_out"

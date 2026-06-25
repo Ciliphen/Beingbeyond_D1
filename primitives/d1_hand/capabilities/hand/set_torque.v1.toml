@@ -1,0 +1,9 @@
+# Set torque limit per joint.  NOT exposed as MCP — same reasoning as set_speed.
+[contract]
+id      = "beingbeyond/primitive/hand/set_torque"
+version = "1"
+kind    = "primitive"
+idl     = "hand/srv/SetTorque.srv"
+
+[mode]
+type = "rpc"

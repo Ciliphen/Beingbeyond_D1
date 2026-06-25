@@ -1,0 +1,11 @@
+# Query hand metadata.  LLM-facing MCP tool — consumer calls this first
+# to discover joint count, names, and model, then calls move_joint with
+# the correct array length.
+[contract]
+id      = "beingbeyond/primitive/hand/info"
+version = "1"
+kind    = "primitive"
+idl     = "hand/srv/GetHandInfo.srv"
+
+[mode]
+type = "rpc"

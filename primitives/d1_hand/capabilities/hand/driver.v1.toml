@@ -1,0 +1,10 @@
+# Lifecycle entry point.  Every primitive MUST have this contract — rbnx boot
+# and executor use the /driver endpoint to send CMD_INIT / CMD_ACTIVATE.
+[contract]
+id      = "beingbeyond/primitive/hand/driver"
+version = "1"
+kind    = "primitive"
+idl     = "lifecycle/srv/Driver.srv"
+
+[mode]
+type = "rpc"
