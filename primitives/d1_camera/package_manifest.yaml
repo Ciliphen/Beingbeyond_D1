@@ -1,0 +1,17 @@
+manifestVersion: 1
+package:
+  name: com.beingbeyond.d1_camera
+  version: 0.1.0
+  vendor: beingbeyond
+  license: MulanPSL-2.0
+build: bash scripts/build.sh
+start: bash scripts/start.sh
+capabilities:
+  - name: beingbeyond/primitive/camera/driver
+  - name: beingbeyond/primitive/camera/info
+  - name: beingbeyond/primitive/camera/rgb
+  - name: beingbeyond/primitive/camera/depth
+  - name: beingbeyond/primitive/camera/snapshot
+  - name: beingbeyond/primitive/camera/depth_snapshot
+  - name: beingbeyond/primitive/camera/rgbd
+  - name: beingbeyond/primitive/camera/intrinsics

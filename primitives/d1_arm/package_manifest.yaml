@@ -1,0 +1,13 @@
+manifestVersion: 1
+package:
+  name: com.beingbeyond.d1_arm
+  version: 0.1.0
+  vendor: beingbeyond
+  license: MulanPSL-2.0
+build: bash scripts/build.sh
+start: bash scripts/start.sh
+capabilities:
+  - name: beingbeyond/primitive/arm/driver
+  - name: beingbeyond/primitive/arm/move_joint
+  - name: beingbeyond/primitive/arm/state_joint
+  - name: beingbeyond/primitive/arm/info

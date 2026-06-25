@@ -1,0 +1,8 @@
+---
+uint8[] rgb_data
+uint8[] depth_data
+uint32 width
+uint32 height
+string rgb_encoding
+string depth_encoding
+float32 depth_scale

@@ -1,0 +1,9 @@
+# Query camera metadata.  LLM-facing MCP tool.
+[contract]
+id      = "beingbeyond/primitive/camera/info"
+version = "1"
+kind    = "primitive"
+idl     = "camera/srv/GetCameraInfo.srv"
+
+[mode]
+type = "rpc"

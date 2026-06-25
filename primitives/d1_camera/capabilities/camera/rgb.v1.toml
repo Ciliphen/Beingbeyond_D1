@@ -1,0 +1,9 @@
+# Continuous RGB image stream via ROS 2 topic (high-frequency, for scene/mapping consumers).
+[contract]
+id      = "beingbeyond/primitive/camera/rgb"
+version = "1"
+kind    = "primitive"
+idl     = "sensor_msgs/msg/Image.msg"
+
+[mode]
+type = "topic_out"

@@ -1,0 +1,10 @@
+# Query arm metadata.  LLM-facing MCP tool — consumer calls this first
+# to discover joint count, names, and model.
+[contract]
+id      = "beingbeyond/primitive/arm/info"
+version = "1"
+kind    = "primitive"
+idl     = "arm/srv/GetArmInfo.srv"
+
+[mode]
+type = "rpc"
