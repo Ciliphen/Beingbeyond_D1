@@ -144,20 +144,36 @@ def main() -> None:
     # ── Loop ───────────────────────────────────────────────────────────
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     frame_count = 0
+    DETECT_EVERY_N = 5            # run YOLO every N frames
+    INFER_SIZE = (320, 240)       # resize to this before inference (CPU speed)
+    last_detections = []          # keep showing last result between inferences
 
     try:
         while True:
             t0 = time.time()
 
-            rgb = cam.snapshot(filtered=False)
+            rgb_full = cam.snapshot(filtered=False)
 
-            detections = detect_objects_in_frame(
-                model, rgb, conf_thres=args.conf, iou_thres=args.iou,
-            )
+            # ── YOLO (resize + skip frames for CPU speed) ─────────────
+            t_infer = 0.0
+            if frame_count % DETECT_EVERY_N == 0:
+                rgb_small = cv2.resize(rgb_full, INFER_SIZE, interpolation=cv2.INTER_AREA)
+                t_infer_start = time.time()
+                dets_small = detect_objects_in_frame(
+                    model, rgb_small, conf_thres=args.conf, iou_thres=args.iou,
+                )
+                t_infer = time.time() - t_infer_start
+                # Scale detection coords back to full resolution
+                sx = rgb_full.shape[1] / rgb_small.shape[1]
+                sy = rgb_full.shape[0] / rgb_small.shape[0]
+                last_detections = [
+                    ((u * sx, v * sy, w * sx, h * sy, r), s, c, n)
+                    for (u, v, w, h, r), s, c, n in dets_small
+                ]
 
-            # Annotate
-            vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            for (u, v, w, h, r), score, cls_id, cls_name in detections:
+            # Annotate (always draw last known detections on full-res)
+            vis = cv2.cvtColor(rgb_full, cv2.COLOR_RGB2BGR)
+            for (u, v, w, h, r), score, cls_id, cls_name in last_detections:
                 draw_box(vis, u, v, w, h, np.rad2deg(r),
                          f"{cls_name}: {score:.2f}")
                 cv2.circle(vis, (int(u), int(v)), 4, (0, 0, 255), -1)
@@ -165,35 +181,35 @@ def main() -> None:
             # Overlay info
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-6)
-            cv2.putText(vis, f"FPS: {fps:.1f}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-            cv2.putText(vis, f"Detections: {len(detections)}", (10, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(vis, f"Detections: {len(last_detections)}",
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             if head:
                 cv2.putText(vis,
                             f"Head yaw: {head.yaw_deg:+.0f}  pitch: {head.pitch_deg:+.0f}",
-                            (10, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             (255, 200, 0), 2)
 
             cv2.imshow(WINDOW, vis)
 
-            # ── Keyboard ───────────────────────────────────────────────
-            raw = cv2.waitKey(1)
+            # ── Keyboard (case-insensitive) ────────────────────────────
+            raw = cv2.waitKey(5)  # 5ms = better key capture than 1ms
             key = raw & 0xFF
 
-            if key == 27 or key == ord('q'):   # ESC / Q → quit
+            if key == 27 or key == ord('q') or key == ord('Q'):
                 break
 
             if head:
-                if key == ord('a'):            # yaw left
+                if key in (ord('a'), ord('A')):
                     head.step(dyaw_deg=+HEAD_YAW_STEP_DEG)
-                elif key == ord('d'):          # yaw right
+                elif key in (ord('d'), ord('D')):
                     head.step(dyaw_deg=-HEAD_YAW_STEP_DEG)
-                elif key == ord('w'):          # pitch up
+                elif key in (ord('w'), ord('W')):
                     head.step(dpitch_deg=+HEAD_PITCH_STEP_DEG)
-                elif key == ord('s'):          # pitch down
+                elif key in (ord('s'), ord('S')):
                     head.step(dpitch_deg=-HEAD_PITCH_STEP_DEG)
-                elif key == ord('h'):          # home
+                elif key in (ord('h'), ord('H')):
                     head.home()
                     print("[Head] → 0°")
 
