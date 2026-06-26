@@ -128,10 +128,10 @@ def main():
     model = None
     if args.depth_mode:
         print("[Init] Depth segmentation mode (no YOLO)")
-        from block_grasp.depth_detector import DepthBlockDetector
+        from block_grasp.depth_detector import DepthBlockDetector, HSV_RANGES
         cam_info = cam.intrinsics()
         depth_detector = DepthBlockDetector(intrinsics=cam_info)
-        print(f"       HSV ranges: {list(HSV_RANGES.keys())}")
+        print(f"       Colours: {sorted(set(n.rstrip('2') for n in HSV_RANGES))}")
     else:
         print(f"[Init] Model: {args.model}")
         model = load_model(args.model, device="cpu")
@@ -193,17 +193,17 @@ def main():
         while True:
             t0 = time.time()
 
-            rgb = cam.snapshot(filtered=False)
+            if args.depth_mode:
+                rgb, depth = cam.rgbd(filtered=True)
+            else:
+                rgb = cam.snapshot(filtered=False)
+                depth = None  # unused in YOLO mode
 
             # ── Detection (depth mode = main thread, YOLO = worker) ──
             t_infer = 0.0
             if args.depth_mode:
-                depth_frame, _ = cam.rgbd(filtered=False)
-                rgb_for_det = rgb  # we already have rgb from snapshot
-                # Actually need RGB+D aligned — use rgbd
                 t1 = time.time()
-                rgb_for_det, depth_for_det = cam.rgbd(filtered=False)
-                blocks = depth_detector.detect(rgb_for_det, depth_for_det)
+                blocks = depth_detector.detect(rgb, depth)
                 t_infer = time.time() - t1
                 dets = [((b.u, b.v, b.w, b.h, math.radians(b.angle_deg)),
                         1.0, 0, b.label) for b in blocks]
