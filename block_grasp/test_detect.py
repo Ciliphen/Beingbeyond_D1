@@ -131,6 +131,7 @@ def main():
 
     # ── Loop ─────────────────────────────────────────────────────────
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW, args.cam_width * 2, args.cam_height * 2)
     frame_count = 0
     infer_size = (args.infer_w, args.infer_h)
     # Shared state for background inference thread
@@ -197,7 +198,8 @@ def main():
                             f"Head: yaw={head.yaw_deg:+.0f}  pitch={head.pitch_deg:+.0f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
-            cv2.imshow(WINDOW, vis)
+            vis_big = cv2.resize(vis, (args.cam_width * 2, args.cam_height * 2))
+            cv2.imshow(WINDOW, vis_big)
 
             # ── Keys ─────────────────────────────────────────────────
             raw = cv2.waitKey(5)
