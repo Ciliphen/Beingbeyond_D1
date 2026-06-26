@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Test YOLO OBB detection with D1's RealSense camera + head control.
+"""
+D1 camera + head control + YOLO detection + dataset capture.
 
 Keyboard:
-    A / D     head yaw   left / right  (±2°/press)
-    W / S     head pitch up   / down    (±1°/press)
-    H         home head  (zero yaw + pitch)
+    A / D     head yaw   left / right
+    W / S     head pitch up   / down
+    H         home head  (zero)
+    SPACE     save photo for dataset
     Q / ESC   exit
 
 Usage:
@@ -20,7 +22,7 @@ import os
 import sys
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -30,243 +32,190 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from camera.d1_camera_primitive import D1CameraPrimitive
 from object_detect import detect_objects_in_frame, draw_box, load_model
 
-# ── Head constants ─────────────────────────────────────────────────────
-HEAD_YAW_STEP_DEG = 2.0
-HEAD_PITCH_STEP_DEG = 1.0
-HEAD_YAW_LIMIT_DEG = 90.0
-HEAD_PITCH_LIMIT_DEG = 60.0
-
-WINDOW = "D1 Block Detect  |  A/D yaw  W/S pitch  H home  Q/ESC quit"
+# ── Constants ──────────────────────────────────────────────────────────────
+HEAD_YAW_STEP = 2.0
+HEAD_PITCH_STEP = 1.0
+HEAD_YAW_LIMIT = 90.0
+HEAD_PITCH_LIMIT = 60.0
+WINDOW = "D1  |  A/D yaw  W/S pitch  H home  SPACE save  Q quit"
 
 
 class HeadController:
-    """Minimal head-yaw/pitch controller via HeadArmRobot SDK."""
 
     def __init__(self, dev="/dev/ttyUSB0", urdf_path="", baudrate=1_000_000):
         if not urdf_path:
             from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
             urdf_path = get_default_urdf_path()
         from beingbeyond_d1_sdk.head_arm import HeadArmRobot
-        self._robot = HeadArmRobot(urdf_path=urdf_path, dev=dev, baudrate=baudrate)
-        q = self._robot.get_positions()
-        self._head_yaw = q[0]
-        self._head_pitch = q[1]
+        self._r = HeadArmRobot(urdf_path=urdf_path, dev=dev, baudrate=baudrate)
+        q = self._r.get_positions()
+        self._yaw = q[0]
+        self._pitch = q[1]
 
     @property
-    def yaw_deg(self) -> float:
-        return math.degrees(self._head_yaw)
+    def yaw(self): return math.degrees(self._yaw)
 
     @property
-    def pitch_deg(self) -> float:
-        return math.degrees(self._head_pitch)
+    def pitch(self): return math.degrees(self._pitch)
 
-    def step(self, dyaw_deg=0.0, dpitch_deg=0.0):
-        self._head_yaw += math.radians(dyaw_deg)
-        self._head_pitch += math.radians(dpitch_deg)
-        self._head_yaw = max(-math.radians(HEAD_YAW_LIMIT_DEG),
-                             min(math.radians(HEAD_YAW_LIMIT_DEG), self._head_yaw))
-        self._head_pitch = max(-math.radians(HEAD_PITCH_LIMIT_DEG),
-                               min(math.radians(HEAD_PITCH_LIMIT_DEG), self._head_pitch))
-        self._send()
+    def step(self, dyaw=0.0, dpitch=0.0):
+        self._yaw += math.radians(dyaw)
+        self._pitch += math.radians(dpitch)
+        self._yaw = max(-math.radians(HEAD_YAW_LIMIT), min(math.radians(HEAD_YAW_LIMIT), self._yaw))
+        self._pitch = max(-math.radians(HEAD_PITCH_LIMIT), min(math.radians(HEAD_PITCH_LIMIT), self._pitch))
+        q = self._r.get_positions()
+        q[0] = self._yaw
+        q[1] = self._pitch
+        self._r.set_positions(q)
 
     def home(self):
-        self._head_yaw = 0.0
-        self._head_pitch = 0.0
-        self._send()
-
-    def _send(self):
-        q = self._robot.get_positions()
-        q[0] = self._head_yaw
-        q[1] = self._head_pitch
-        self._robot.set_positions(q)
+        self._yaw = 0.0
+        self._pitch = 0.0
+        q = self._r.get_positions()
+        q[0] = 0.0
+        q[1] = 0.0
+        self._r.set_positions(q)
 
     def close(self):
-        self._robot.close()
+        self._r.close()
 
 
 def main():
-    _PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    parser = argparse.ArgumentParser(description="YOLO detection + head control")
-    parser.add_argument("--model", type=str,
-                        default=os.path.join(_PROJ, "object_detect", "runs",
-                                            "积木方块", "best.pt"))
-    parser.add_argument("--conf", type=float, default=0.85)
-    parser.add_argument("--iou", type=float, default=0.45)
-    parser.add_argument("--cam-width", type=int, default=1280)
-    parser.add_argument("--cam-height", type=int, default=720)
-    parser.add_argument("--cam-fps", type=int, default=30)
-    parser.add_argument("--arm-dev", type=str, default="/dev/ttyUSB0")
-    parser.add_argument("--arm-baud", type=int, default=1_000_000)
-    parser.add_argument("--urdf", type=str, default="")
-    parser.add_argument("--no-head", action="store_true")
-    parser.add_argument("--infer-w", type=int, default=416, help="Inference width")
-    parser.add_argument("--infer-h", type=int, default=234, help="Inference height")
-    parser.add_argument("--save-dir", type=str, default="dataset/raw",
-                        help="Directory for captured images (spacebar)")
-    parser.add_argument("--depth-mode", action="store_true",
-                        help="Use depth segmentation (no YOLO training needed)")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="D1 camera + head + detect + capture")
+    p.add_argument("--model", default=os.path.join(_ROOT, "object_detect", "runs", "积木方块", "best.pt"))
+    p.add_argument("--conf", type=float, default=0.85)
+    p.add_argument("--iou", type=float, default=0.45)
+    p.add_argument("--cam-width", type=int, default=1280)
+    p.add_argument("--cam-height", type=int, default=720)
+    p.add_argument("--cam-fps", type=int, default=30)
+    p.add_argument("--arm-dev", default="/dev/ttyUSB0")
+    p.add_argument("--arm-baud", type=int, default=1_000_000)
+    p.add_argument("--urdf", default="")
+    p.add_argument("--no-head", action="store_true")
+    p.add_argument("--infer-w", type=int, default=416)
+    p.add_argument("--infer-h", type=int, default=234)
+    p.add_argument("--save-dir", default=os.path.join(_ROOT, "dataset", "raw"))
+    args = p.parse_args()
 
-    # ── Camera ───────────────────────────────────────────────────────
+    # ── Camera ─────────────────────────────────────────────────────────
     print("[Init] Camera ...")
     cam = D1CameraPrimitive(width=args.cam_width, height=args.cam_height, fps=args.cam_fps)
     info = cam.info()
     print(f"       {info['model']} {info['width']}x{info['height']}@{info['fps']}fps")
 
-    # ── Head ─────────────────────────────────────────────────────────
-    head = None
+    # ── Head ───────────────────────────────────────────────────────────
+    head: Optional[HeadController] = None
     if not args.no_head:
         print(f"[Init] Head on {args.arm_dev} ...")
         head = HeadController(dev=args.arm_dev, urdf_path=args.urdf, baudrate=args.arm_baud)
-        print(f"       yaw={head.yaw_deg:+.0f}°  pitch={head.pitch_deg:+.0f}°")
-    else:
-        print("[Init] Head disabled (--no-head).")
+        print(f"       yaw={head.yaw:+.0f}°  pitch={head.pitch:+.0f}°")
 
-    # ── Model ────────────────────────────────────────────────────────
-    depth_detector = None
-    model = None
-    if args.depth_mode:
-        print("[Init] Depth segmentation mode (no YOLO)")
-        from block_grasp.depth_detector import DepthBlockDetector, HSV_RANGES
-        cam_info = cam.intrinsics()
-        depth_detector = DepthBlockDetector(intrinsics=cam_info)
-        print(f"       Colours: {sorted(set(n.rstrip('2') for n in HSV_RANGES))}")
-    else:
-        print(f"[Init] Model: {args.model}")
-        model = load_model(args.model, device="cpu")
-        print(f"       Classes: {list(model.names.values())}")
+    # ── YOLO model ─────────────────────────────────────────────────────
+    print(f"[Init] Model: {args.model}")
+    model = load_model(args.model, device="cpu")
+    print(f"       Classes: {list(model.names.values())}")
 
-    # ── Dataset capture dir ──────────────────────────────────────────
+    # ── Save dir ───────────────────────────────────────────────────────
     os.makedirs(args.save_dir, exist_ok=True)
-    _saved_count = 0
+    saved = 0
 
-    # ── Banner ───────────────────────────────────────────────────────
-    mode_str = "DEPTH" if args.depth_mode else "YOLO"
-    print("\n" + "=" * 60)
-    print(f"  Mode: {mode_str}  |  A/D yaw  W/S pitch  H home  Q/ESC quit")
-    print(f"  SPACE → save photo ({args.save_dir}/)")
-    print("=" * 60 + "\n")
+    # ── Shared state (main ↔ inference thread) ─────────────────────────
+    lock = threading.Lock()
+    latest_frame: Optional[np.ndarray] = None
+    latest_dets: List = []
+    latest_t = 0.0
+    running = True
 
-    # ── Loop ─────────────────────────────────────────────────────────
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, args.cam_width, args.cam_height)
-    frame_count = 0
-    infer_size = (args.infer_w, args.infer_h)
-    # Shared state for background inference thread
-    _lock = threading.Lock()
-    _latest_rgb: Optional[np.ndarray] = None
-    _latest_dets: List = []
-    _latest_t_infer = 0.0
-    _running = True
-
-    def _infer_worker():
-        """Run YOLO in background thread, reading latest frame and writing results."""
-        nonlocal _latest_dets, _latest_t_infer
-        while _running:
-            with _lock:
-                frame = _latest_rgb
-            if frame is None:
+    def _worker():
+        nonlocal latest_dets, latest_t
+        infer_size = (args.infer_w, args.infer_h)
+        while running:
+            with lock:
+                f = latest_frame
+            if f is None:
                 time.sleep(0.01)
                 continue
             try:
-                small = cv2.resize(frame, infer_size, interpolation=cv2.INTER_AREA)
-                t1 = time.time()
-                dets_small = detect_objects_in_frame(model, small, args.conf, args.iou)
-                dt = time.time() - t1
-                with _lock:
-                    sx = frame.shape[1] / small.shape[1]
-                    sy = frame.shape[0] / small.shape[0]
-                    _latest_dets = [((u*sx, v*sy, w*sx, h*sy, r), s, c, n)
-                                    for (u, v, w, h, r), s, c, n in dets_small]
-                    _latest_t_infer = dt
-                    if dets_small:
-                        items = ", ".join(f"{n}={s:.2f}" for _, s, _, n in dets_small)
-                        print(f"[Detect] {items}")
+                small = cv2.resize(f, infer_size, interpolation=cv2.INTER_AREA)
+                t0 = time.time()
+                dets_s = detect_objects_in_frame(model, small, args.conf, args.iou)
+                dt = time.time() - t0
+                sx = f.shape[1] / small.shape[1]
+                sy = f.shape[0] / small.shape[0]
+                with lock:
+                    latest_dets = [((u*sx, v*sy, w*sx, h*sy, r), s, c, n)
+                                   for (u, v, w, h, r), s, c, n in dets_s]
+                    latest_t = dt
             except Exception as e:
-                print(f"[Infer] Error: {e}")
+                print(f"[Worker] {e}")
 
-    worker = threading.Thread(target=_infer_worker, daemon=True)
-    worker.start()
+    threading.Thread(target=_worker, daemon=True).start()
+
+    # ── Banner ─────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("  A/D yaw  |  W/S pitch  |  H home  |  SPACE save  |  Q quit")
+    print(f"  Saving to: {args.save_dir}/")
+    print("=" * 60 + "\n")
+
+    # ── Main loop ──────────────────────────────────────────────────────
+    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW, args.cam_width, args.cam_height)
+    frames = 0
 
     try:
         while True:
             t0 = time.time()
+            rgb = cam.snapshot(filtered=False)
 
-            if args.depth_mode:
-                rgb, depth = cam.rgbd(filtered=True)
-            else:
-                rgb = cam.snapshot(filtered=False)
-                depth = None  # unused in YOLO mode
+            # Feed worker
+            with lock:
+                latest_frame = rgb
+                dets = list(latest_dets)
+                t_inf = latest_t
 
-            # ── Detection (depth mode = main thread, YOLO = worker) ──
-            t_infer = 0.0
-            if args.depth_mode:
-                t1 = time.time()
-                blocks = depth_detector.detect(rgb, depth)
-                t_infer = time.time() - t1
-                dets = [((b.u, b.v, b.w, b.h, math.radians(b.angle_deg)),
-                        1.0, 0, b.label) for b in blocks]
-            else:
-                with _lock:
-                    _latest_rgb = rgb
-                    dets = list(_latest_dets)
-                    t_infer = _latest_t_infer
-
-            # ── Annotate ─────────────────────────────────────────────
+            # Annotate
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            for (u, v, w, h, r), score, cls_id, cls_name in dets:
-                draw_box(vis, u, v, w, h, np.rad2deg(r), f"{cls_name}" if args.depth_mode else f"{cls_name}: {score:.2f}")
+            for (u, v, w, h, r), score, _, name in dets:
+                draw_box(vis, u, v, w, h, np.rad2deg(r), f"{name}: {score:.2f}")
                 cv2.circle(vis, (int(u), int(v)), 4, (0, 0, 255), -1)
 
             # Overlay
-            dt = time.time() - t0
-            fps = 1.0 / max(dt, 1e-6)
-            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
+            fps = 1.0 / max(time.time() - t0, 1e-6)
+            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_inf*1000:.0f}ms",
                         (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
-            cv2.putText(vis, f"Dets: {len(dets)}",
+            cv2.putText(vis, f"Dets: {len(dets)}  Saved: {saved}",
                         (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
             if head:
-                cv2.putText(vis,
-                            f"Head: yaw={head.yaw_deg:+.0f}  pitch={head.pitch_deg:+.0f}",
+                cv2.putText(vis, f"Head: yaw={head.yaw:+.0f}  pitch={head.pitch:+.0f}",
                             (15, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 200, 0), 2)
 
             cv2.imshow(WINDOW, vis)
 
-            # ── Keys ─────────────────────────────────────────────────
-            raw = cv2.waitKey(5)
-            key = raw & 0xFF
-
+            # Keys
+            key = cv2.waitKey(5) & 0xFF
             if key == 27 or key in (ord('q'), ord('Q')):
                 break
-
-            if head:
-                if key in (ord('a'), ord('A')):
-                    head.step(dyaw_deg=+HEAD_YAW_STEP_DEG)
-                elif key in (ord('d'), ord('D')):
-                    head.step(dyaw_deg=-HEAD_YAW_STEP_DEG)
-                elif key in (ord('w'), ord('W')):
-                    head.step(dpitch_deg=-HEAD_PITCH_STEP_DEG)
-                elif key in (ord('s'), ord('S')):
-                    head.step(dpitch_deg=+HEAD_PITCH_STEP_DEG)
-                elif key in (ord('h'), ord('H')):
-                    head.home()
-                    print("[Head] → 0°")
-
-            if key == 32:  # SPACE — save photo
-                path = os.path.join(args.save_dir, f"{_saved_count:04d}.jpg")
+            if key == 32:  # SPACE
+                path = os.path.join(args.save_dir, f"{saved:05d}.jpg")
                 cv2.imwrite(path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
                 print(f"[Save] {path}")
-                _saved_count += 1
+                saved += 1
+            if head:
+                if key in (ord('a'), ord('A')):   head.step(dyaw=+HEAD_YAW_STEP)
+                elif key in (ord('d'), ord('D')): head.step(dyaw=-HEAD_YAW_STEP)
+                elif key in (ord('w'), ord('W')): head.step(dpitch=-HEAD_PITCH_STEP)
+                elif key in (ord('s'), ord('S')): head.step(dpitch=+HEAD_PITCH_STEP)
+                elif key in (ord('h'), ord('H')): head.home(); print("[Head] 0°")
 
-            frame_count += 1
+            frames += 1
 
     except KeyboardInterrupt:
-        print("\n[Test] Interrupted.")
+        print("\n[Exit] Interrupted.")
     finally:
-        _running = False
-        worker.join(timeout=2.0)
-        print(f"[Test] {frame_count} frames.")
+        running = False
+        print(f"[Exit] {frames} frames, {saved} saved.")
         cam.close()
         if head:
             head.close()
