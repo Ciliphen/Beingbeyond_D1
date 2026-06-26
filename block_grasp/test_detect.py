@@ -139,19 +139,15 @@ def main():
     _latest_rgb: Optional[np.ndarray] = None
     _latest_dets: List = []
     _latest_t_infer = 0.0
-    _frame_id = 0       # increments each capture; worker skips stale frames
-    _detection_age = 0   # frames since last detection update
     _running = True
 
     def _infer_worker():
-        """Run YOLO in background, always processing only the latest frame."""
-        nonlocal _latest_dets, _latest_t_infer, _detection_age
-        last_processed = -1
+        """Run YOLO in background thread, reading latest frame and writing results."""
+        nonlocal _latest_dets, _latest_t_infer
         while _running:
             with _lock:
-                fid = _frame_id
-                frame = _latest_rgb.copy() if _latest_rgb is not None else None
-            if frame is None or fid == last_processed:
+                frame = _latest_rgb
+            if frame is None:
                 time.sleep(0.01)
                 continue
             try:
@@ -159,17 +155,12 @@ def main():
                 t1 = time.time()
                 dets_small = detect_objects_in_frame(model, small, args.conf, args.iou)
                 dt = time.time() - t1
-                # Check if newer frame arrived while we were inferring
                 with _lock:
-                    if _frame_id != fid:
-                        continue  # stale, skip
                     sx = frame.shape[1] / small.shape[1]
                     sy = frame.shape[0] / small.shape[0]
                     _latest_dets = [((u*sx, v*sy, w*sx, h*sy, r), s, c, n)
                                     for (u, v, w, h, r), s, c, n in dets_small]
                     _latest_t_infer = dt
-                    _detection_age = 0
-                last_processed = fid
             except Exception as e:
                 print(f"[Infer] Error: {e}")
 
@@ -185,11 +176,8 @@ def main():
             # Feed latest frame to inference thread
             with _lock:
                 _latest_rgb = rgb
-                _frame_id += 1
-                _detection_age += 1
                 dets = list(_latest_dets)
                 t_infer = _latest_t_infer
-                age = _detection_age
 
             # ── Annotate ─────────────────────────────────────────────
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -200,8 +188,7 @@ def main():
             # Overlay
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-6)
-            age_color = (0, 255, 0) if age < 5 else (0, 200, 255) if age < 15 else (0, 100, 255)
-            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms  age: {age}",
+            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
                         (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, age_color, 3)
             cv2.putText(vis, f"Dets: {len(dets)}",
                         (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
