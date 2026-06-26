@@ -97,7 +97,9 @@ WINDOW = "D1 Block Detect  |  A/D yaw  W/S pitch  H home  Q/ESC quit"
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Test YOLO OBB detection + head control")
-    parser.add_argument("--model", type=str, default="yolo11n-obb.pt",
+    parser.add_argument("--model", type=str,
+                        default=os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                            "object_detect", "runs", "积木方块", "best.pt"),
                         help="Path to YOLO .pt checkpoint")
     parser.add_argument("--conf", type=float, default=0.85)
     parser.add_argument("--iou", type=float, default=0.45)
