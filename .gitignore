@@ -77,4 +77,5 @@ ENV/
 env.bak/
 venv.bak/
 
-todo.txt
+todo.txt*.pt
+object_detect/runs/
