@@ -102,6 +102,8 @@ def main():
     parser.add_argument("--no-head", action="store_true")
     parser.add_argument("--infer-w", type=int, default=416, help="Inference width")
     parser.add_argument("--infer-h", type=int, default=234, help="Inference height")
+    parser.add_argument("--save-dir", type=str, default="dataset/raw",
+                        help="Directory for captured images (spacebar)")
     args = parser.parse_args()
 
     # ── Camera ───────────────────────────────────────────────────────
@@ -124,9 +126,14 @@ def main():
     model = load_model(args.model, device="cpu")
     print(f"       Classes: {list(model.names.values())}")
 
+    # ── Dataset capture dir ──────────────────────────────────────────
+    os.makedirs(args.save_dir, exist_ok=True)
+    _saved_count = 0
+
     # ── Banner ───────────────────────────────────────────────────────
     print("\n" + "=" * 60)
     print("  A/D yaw ←→   W/S pitch ↑↓   H home   Q/ESC quit")
+    print(f"  SPACE  save photo → {args.save_dir}/")
     print("=" * 60 + "\n")
 
     # ── Loop ─────────────────────────────────────────────────────────
@@ -221,6 +228,12 @@ def main():
                 elif key in (ord('h'), ord('H')):
                     head.home()
                     print("[Head] → 0°")
+
+            if key == 32:  # SPACE — save photo
+                path = os.path.join(args.save_dir, f"{_saved_count:04d}.jpg")
+                cv2.imwrite(path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                print(f"[Save] {path}")
+                _saved_count += 1
 
             frame_count += 1
 
