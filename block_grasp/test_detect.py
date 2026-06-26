@@ -189,7 +189,7 @@ def main():
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-6)
             cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
-                        (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, age_color, 3)
+                        (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
             cv2.putText(vis, f"Dets: {len(dets)}",
                         (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
             if head:
