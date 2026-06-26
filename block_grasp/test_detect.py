@@ -161,6 +161,9 @@ def main():
                     _latest_dets = [((u*sx, v*sy, w*sx, h*sy, r), s, c, n)
                                     for (u, v, w, h, r), s, c, n in dets_small]
                     _latest_t_infer = dt
+                    if dets_small:
+                        items = ", ".join(f"{n}={s:.2f}" for _, s, _, n in dets_small)
+                        print(f"[Detect] {items}")
             except Exception as e:
                 print(f"[Infer] Error: {e}")
 
