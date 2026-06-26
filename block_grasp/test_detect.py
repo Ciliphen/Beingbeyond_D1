@@ -189,14 +189,14 @@ def main():
             # Overlay
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-6)
-            cv2.putText(vis, f"FPS: {fps:.1f}  thread: {t_infer*1000:.0f}ms",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
+                        (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
             cv2.putText(vis, f"Dets: {len(dets)}",
-                        (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                        (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
             if head:
                 cv2.putText(vis,
                             f"Head: yaw={head.yaw_deg:+.0f}  pitch={head.pitch_deg:+.0f}",
-                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+                            (15, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 200, 0), 2)
 
             cv2.imshow(WINDOW, vis)
 
@@ -209,13 +209,13 @@ def main():
 
             if head:
                 if key in (ord('a'), ord('A')):
-                    head.step(dyaw_deg=+HEAD_YAW_STEP_DEG)
-                elif key in (ord('d'), ord('D')):
                     head.step(dyaw_deg=-HEAD_YAW_STEP_DEG)
+                elif key in (ord('d'), ord('D')):
+                    head.step(dyaw_deg=+HEAD_YAW_STEP_DEG)
                 elif key in (ord('w'), ord('W')):
-                    head.step(dpitch_deg=+HEAD_PITCH_STEP_DEG)
-                elif key in (ord('s'), ord('S')):
                     head.step(dpitch_deg=-HEAD_PITCH_STEP_DEG)
+                elif key in (ord('s'), ord('S')):
+                    head.step(dpitch_deg=+HEAD_PITCH_STEP_DEG)
                 elif key in (ord('h'), ord('H')):
                     head.home()
                     print("[Head] → 0°")
