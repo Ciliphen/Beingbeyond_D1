@@ -221,9 +221,9 @@ def main():
 
             if head:
                 if key in (ord('a'), ord('A')):
-                    head.step(dyaw_deg=-HEAD_YAW_STEP_DEG)
-                elif key in (ord('d'), ord('D')):
                     head.step(dyaw_deg=+HEAD_YAW_STEP_DEG)
+                elif key in (ord('d'), ord('D')):
+                    head.step(dyaw_deg=-HEAD_YAW_STEP_DEG)
                 elif key in (ord('w'), ord('W')):
                     head.step(dpitch_deg=-HEAD_PITCH_STEP_DEG)
                 elif key in (ord('s'), ord('S')):
