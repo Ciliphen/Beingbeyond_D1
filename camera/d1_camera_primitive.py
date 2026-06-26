@@ -29,9 +29,16 @@ Usage:
 """
 from __future__ import annotations
 
+import os
+import sys
 from typing import Dict, Tuple
 
 import numpy as np
+
+# Ensure project root is on sys.path for `from vision import ...`
+_PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJ_ROOT not in sys.path:
+    sys.path.insert(0, _PROJ_ROOT)
 
 from vision import RealSenseCamera
 
