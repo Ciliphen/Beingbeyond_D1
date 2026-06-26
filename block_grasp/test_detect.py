@@ -104,6 +104,8 @@ def main():
     parser.add_argument("--infer-h", type=int, default=234, help="Inference height")
     parser.add_argument("--save-dir", type=str, default="dataset/raw",
                         help="Directory for captured images (spacebar)")
+    parser.add_argument("--depth-mode", action="store_true",
+                        help="Use depth segmentation (no YOLO training needed)")
     args = parser.parse_args()
 
     # ── Camera ───────────────────────────────────────────────────────
@@ -122,18 +124,28 @@ def main():
         print("[Init] Head disabled (--no-head).")
 
     # ── Model ────────────────────────────────────────────────────────
-    print(f"[Init] Model: {args.model}")
-    model = load_model(args.model, device="cpu")
-    print(f"       Classes: {list(model.names.values())}")
+    depth_detector = None
+    model = None
+    if args.depth_mode:
+        print("[Init] Depth segmentation mode (no YOLO)")
+        from block_grasp.depth_detector import DepthBlockDetector
+        cam_info = cam.intrinsics()
+        depth_detector = DepthBlockDetector(intrinsics=cam_info)
+        print(f"       HSV ranges: {list(HSV_RANGES.keys())}")
+    else:
+        print(f"[Init] Model: {args.model}")
+        model = load_model(args.model, device="cpu")
+        print(f"       Classes: {list(model.names.values())}")
 
     # ── Dataset capture dir ──────────────────────────────────────────
     os.makedirs(args.save_dir, exist_ok=True)
     _saved_count = 0
 
     # ── Banner ───────────────────────────────────────────────────────
+    mode_str = "DEPTH" if args.depth_mode else "YOLO"
     print("\n" + "=" * 60)
-    print("  A/D yaw ←→   W/S pitch ↑↓   H home   Q/ESC quit")
-    print(f"  SPACE  save photo → {args.save_dir}/")
+    print(f"  Mode: {mode_str}  |  A/D yaw  W/S pitch  H home  Q/ESC quit")
+    print(f"  SPACE → save photo ({args.save_dir}/)")
     print("=" * 60 + "\n")
 
     # ── Loop ─────────────────────────────────────────────────────────
@@ -183,16 +195,28 @@ def main():
 
             rgb = cam.snapshot(filtered=False)
 
-            # Feed latest frame to inference thread
-            with _lock:
-                _latest_rgb = rgb
-                dets = list(_latest_dets)
-                t_infer = _latest_t_infer
+            # ── Detection (depth mode = main thread, YOLO = worker) ──
+            t_infer = 0.0
+            if args.depth_mode:
+                depth_frame, _ = cam.rgbd(filtered=False)
+                rgb_for_det = rgb  # we already have rgb from snapshot
+                # Actually need RGB+D aligned — use rgbd
+                t1 = time.time()
+                rgb_for_det, depth_for_det = cam.rgbd(filtered=False)
+                blocks = depth_detector.detect(rgb_for_det, depth_for_det)
+                t_infer = time.time() - t1
+                dets = [((b.u, b.v, b.w, b.h, math.radians(b.angle_deg)),
+                        1.0, 0, b.label) for b in blocks]
+            else:
+                with _lock:
+                    _latest_rgb = rgb
+                    dets = list(_latest_dets)
+                    t_infer = _latest_t_infer
 
             # ── Annotate ─────────────────────────────────────────────
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
             for (u, v, w, h, r), score, cls_id, cls_name in dets:
-                draw_box(vis, u, v, w, h, np.rad2deg(r), f"{cls_name}: {score:.2f}")
+                draw_box(vis, u, v, w, h, np.rad2deg(r), f"{cls_name}" if args.depth_mode else f"{cls_name}: {score:.2f}")
                 cv2.circle(vis, (int(u), int(v)), 4, (0, 0, 255), -1)
 
             # Overlay
