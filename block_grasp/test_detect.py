@@ -18,6 +18,7 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
 from typing import List, Optional, Tuple
 
@@ -99,8 +100,6 @@ def main():
     parser.add_argument("--arm-baud", type=int, default=1_000_000)
     parser.add_argument("--urdf", type=str, default="")
     parser.add_argument("--no-head", action="store_true")
-    parser.add_argument("--detect-every", type=int, default=3,
-                        help="Run YOLO every N frames (1=every frame)")
     parser.add_argument("--infer-w", type=int, default=320, help="Inference width")
     parser.add_argument("--infer-h", type=int, default=240, help="Inference height")
     args = parser.parse_args()
@@ -134,7 +133,39 @@ def main():
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     frame_count = 0
     infer_size = (args.infer_w, args.infer_h)
-    last_detections: List = []
+    # Shared state for background inference thread
+    _lock = threading.Lock()
+    _latest_rgb: Optional[np.ndarray] = None
+    _latest_dets: List = []
+    _latest_t_infer = 0.0
+    _running = True
+
+    def _infer_worker():
+        """Run YOLO in background thread, reading latest frame and writing results."""
+        nonlocal _latest_dets, _latest_t_infer
+        while _running:
+            with _lock:
+                frame = _latest_rgb
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            try:
+                small = cv2.resize(frame, infer_size, interpolation=cv2.INTER_AREA)
+                t1 = time.time()
+                dets_small = detect_objects_in_frame(model, small, args.conf, args.iou)
+                dt = time.time() - t1
+                sx = frame.shape[1] / small.shape[1]
+                sy = frame.shape[0] / small.shape[0]
+                dets = [((u * sx, v * sy, w * sx, h * sy, r), s, c, n)
+                        for (u, v, w, h, r), s, c, n in dets_small]
+                with _lock:
+                    _latest_dets = dets
+                    _latest_t_infer = dt
+            except Exception as e:
+                print(f"[Infer] Error: {e}")
+
+    worker = threading.Thread(target=_infer_worker, daemon=True)
+    worker.start()
 
     try:
         while True:
@@ -142,32 +173,22 @@ def main():
 
             rgb = cam.snapshot(filtered=False)
 
-            # ── YOLO (resized, every N frames) ───────────────────────
-            t_infer = 0.0
-            if frame_count % args.detect_every == 0:
-                rgb_small = cv2.resize(rgb, infer_size, interpolation=cv2.INTER_AREA)
-                t1 = time.time()
-                dets_small = detect_objects_in_frame(model, rgb_small, args.conf, args.iou)
-                t_infer = time.time() - t1
-                # Scale coords back
-                sx = rgb.shape[1] / rgb_small.shape[1]
-                sy = rgb.shape[0] / rgb_small.shape[0]
-                last_detections = [
-                    ((u * sx, v * sy, w * sx, h * sy, r), s, c, n)
-                    for (u, v, w, h, r), s, c, n in dets_small
-                ]
+            # Feed latest frame to inference thread
+            with _lock:
+                _latest_rgb = rgb
+                dets = list(_latest_dets)
+                t_infer = _latest_t_infer
 
             # ── Annotate ─────────────────────────────────────────────
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            for (u, v, w, h, r), score, cls_id, cls_name in last_detections:
-                draw_box(vis, u, v, w, h, np.rad2deg(r),
-                         f"{cls_name}: {score:.2f}")
+            for (u, v, w, h, r), score, cls_id, cls_name in dets:
+                draw_box(vis, u, v, w, h, np.rad2deg(r), f"{cls_name}: {score:.2f}")
                 cv2.circle(vis, (int(u), int(v)), 4, (0, 0, 255), -1)
 
             # Overlay
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-6)
-            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
+            cv2.putText(vis, f"FPS: {fps:.1f}  thread: {t_infer*1000:.0f}ms",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.putText(vis, f"Dets: {len(last_detections)}",
                         (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
@@ -203,6 +224,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[Test] Interrupted.")
     finally:
+        _running = False
+        worker.join(timeout=2.0)
         print(f"[Test] {frame_count} frames.")
         cam.close()
         if head:
