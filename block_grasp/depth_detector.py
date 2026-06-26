@@ -77,14 +77,27 @@ class DepthBlockDetector:
         Returns:
             List of detected blocks with pixel positions and colour labels.
         """
-        # 1. Find table plane
+        # Note: depth and RGB may differ in size.  We run plane detection
+        # on the depth-native resolution and then scale coordinates to RGB.
+        dh, dw = depth_m.shape[:2]
+        rh, rw = rgb.shape[:2]
+        sx = rw / dw
+        sy = rh / dh
+
+        # 1. Find table plane (at depth resolution)
         table_mask = self._find_table_mask(depth_m)
 
         # 2. Find connected objects above table
         objects_mask = self._objects_above_table(depth_m, table_mask)
 
-        # 3. Extract each object's bounding box and classify colour
-        blocks = self._extract_blocks(rgb, depth_m, objects_mask)
+        # 3. Upsample objects_mask to RGB resolution for extraction
+        if (dw, dh) != (rw, rh):
+            objects_mask = cv2.resize(
+                objects_mask, (rw, rh), interpolation=cv2.INTER_NEAREST,
+            )
+
+        # 4. Extract each object's bounding box and classify colour
+        blocks = self._extract_blocks(rgb, depth_m, objects_mask, sx, sy)
 
         return blocks
 
@@ -171,10 +184,11 @@ class DepthBlockDetector:
     # ── Block extraction + colour classification ───────────────────────
 
     def _extract_blocks(
-        self, rgb: np.ndarray, depth_m: np.ndarray, obj_mask: np.ndarray
+        self, rgb: np.ndarray, depth_m: np.ndarray, obj_mask: np.ndarray,
+        sx: float = 1.0, sy: float = 1.0,
     ) -> List[Block]:
         """Connected components → rotated rect → colour classify."""
-        # Ensure obj_mask matches RGB size (align if needed)
+        # Ensure obj_mask matches RGB size
         if obj_mask.shape[:2] != rgb.shape[:2]:
             obj_mask = cv2.resize(obj_mask, (rgb.shape[1], rgb.shape[0]),
                                   interpolation=cv2.INTER_NEAREST)
@@ -205,16 +219,20 @@ class DepthBlockDetector:
             masked_hsv = cv2.bitwise_and(hsv, hsv, mask=obj)
             label_name = self._classify_colour(masked_hsv, obj)
 
-            # 3D position
+            # 3D position (scale RGB coords to depth resolution for lookup)
+            du = int(u / sx)
+            dv = int(v / sy)
             x_m = y_m = z_m = 0.0
-            if self.intrinsics and depth_m[int(v), int(u)] > 0:
-                z_m = float(depth_m[int(v), int(u)])
-                fx = self.intrinsics["fx"]
-                fy = self.intrinsics["fy"]
-                cx = self.intrinsics["cx"]
-                cy = self.intrinsics["cy"]
-                x_m = (u - cx) * z_m / fx
-                y_m = (v - cy) * z_m / fy
+            if self.intrinsics and 0 <= dv < depth_m.shape[0] and 0 <= du < depth_m.shape[1]:
+                z_d = float(depth_m[dv, du])
+                if z_d > 0:
+                    z_m = z_d
+                    fx = self.intrinsics["fx"]
+                    fy = self.intrinsics["fy"]
+                    cx = self.intrinsics["cx"]
+                    cy = self.intrinsics["cy"]
+                    x_m = (u - cx) * z_m / fx
+                    y_m = (v - cy) * z_m / fy
 
             blocks.append(Block(
                 label=label_name,
