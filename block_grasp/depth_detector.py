@@ -174,6 +174,11 @@ class DepthBlockDetector:
         self, rgb: np.ndarray, depth_m: np.ndarray, obj_mask: np.ndarray
     ) -> List[Block]:
         """Connected components → rotated rect → colour classify."""
+        # Ensure obj_mask matches RGB size (align if needed)
+        if obj_mask.shape[:2] != rgb.shape[:2]:
+            obj_mask = cv2.resize(obj_mask, (rgb.shape[1], rgb.shape[0]),
+                                  interpolation=cv2.INTER_NEAREST)
+
         n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
             obj_mask, connectivity=8
         )
