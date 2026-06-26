@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MulanPSL-2.0
 """
 Test YOLO OBB detection with D1's RealSense camera + head control.
+GPU inference via a subprocess in the *bb_gpu* environment (RTX 5090).
 
-Opens the camera, loads a YOLO model, runs detection on every frame,
-and displays annotated results.  Head control is ON by default.
+Camera + head control run in *bb_d1*; YOLO runs in a forked *bb_gpu*
+subprocess for GPU acceleration.  Use --no-gpu to run YOLO locally (CPU).
 
 Keyboard controls:
     A / D     head yaw   left / right  (±2°/press)
@@ -16,19 +17,24 @@ Usage:
     conda activate bb_d1
     cd ~/Beingbeyond_D1
 
-    # Default: camera + detection + head control
-    python block_grasp/test_detect.py --model object_detect/runs/积木方块/best.pt
+    # GPU inference (default)
+    python block_grasp/test_detect.py
 
-    # Headless (no arm):
-    python block_grasp/test_detect.py --no-head
+    # CPU inference (no separate env needed)
+    python block_grasp/test_detect.py --no-gpu
 """
 from __future__ import annotations
 
 import argparse
+import io
 import math
 import os
+import pickle
+import struct
+import subprocess
 import sys
 import time
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -36,14 +42,30 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from camera.d1_camera_primitive import D1CameraPrimitive
-from object_detect import detect_objects_in_frame, draw_box, load_model
+
+# Inline draw_box to avoid depending on ultralytics in bb_d1 env
 
 
-# ── Head control constants ────────────────────────────────────────────────
+def _draw_box(frame, u, v, w, h, angle_deg, label, color=(0, 255, 0), thickness=2):
+    box_points = cv2.boxPoints(((u, v), (w, h), angle_deg))
+    box_points = np.intp(box_points)
+    cv2.drawContours(frame, [box_points], 0, color, thickness)
+    cv2.putText(frame, label, (int(u - w / 2), int(v - h / 2) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness)
+
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+_PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_BB_GPU_PYTHON = os.path.expanduser("~/miniconda3/envs/bb_gpu/bin/python")
+_GPU_SERVER = os.path.join(_PROJ_ROOT, "block_grasp", "yolo_gpu_server.py")
+
+# ── Head control constants ─────────────────────────────────────────────────
 HEAD_YAW_STEP_DEG = 2.0
 HEAD_PITCH_STEP_DEG = 1.0
 HEAD_YAW_LIMIT_DEG = 90.0
 HEAD_PITCH_LIMIT_DEG = 60.0
+
+WINDOW = "D1 Block Detect  |  A/D yaw  W/S pitch  H home  Q/ESC quit"
 
 
 class HeadController:
@@ -91,113 +113,160 @@ class HeadController:
         self._robot.close()
 
 
-# ── "invisible" window name so cv2 can show it ────────────────────────────
-WINDOW = "D1 Block Detect  |  A/D yaw  W/S pitch  H home  Q/ESC quit"
+# ── GPU subprocess client ──────────────────────────────────────────────────
 
+class GPUClient:
+    """Launch & communicate with the GPU YOLO server in bb_gpu env."""
+
+    def __init__(self, model_path: str, device: str = "cuda:0"):
+        cmd = [_BB_GPU_PYTHON, _GPU_SERVER, "--model", model_path, "--device", device]
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Read "ready" line from stderr
+        line = self._proc.stderr.readline().decode().strip()
+        print(f"       {line}")
+
+    def infer(
+        self,
+        frame: np.ndarray,
+        conf: float,
+        iou: float,
+        infer_size: Optional[Tuple[int, int]] = None,
+    ) -> Tuple[List, float]:
+        """Send a frame, receive detections + timing.  Blocking."""
+        # Encode frame as JPEG bytes (compact)
+        _, img_bytes = cv2.imencode(".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        payload = pickle.dumps((img_bytes.tobytes(), conf, iou, infer_size),
+                               protocol=pickle.HIGHEST_PROTOCOL)
+        self._proc.stdin.write(struct.pack(">I", len(payload)))
+        self._proc.stdin.write(payload)
+        self._proc.stdin.flush()
+
+        # Read response
+        raw_len = self._proc.stdout.read(4)
+        if not raw_len:
+            raise EOFError("GPU server died")
+        msg_len = struct.unpack(">I", raw_len)[0]
+        data = self._proc.stdout.read(msg_len)
+        result = pickle.loads(data)
+        return result["detections"], result["dt"]
+
+    def close(self) -> None:
+        self._proc.stdin.close()
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Test YOLO OBB detection + head control")
+    parser = argparse.ArgumentParser(description="YOLO OBB detection + head control")
     parser.add_argument("--model", type=str,
-                        default=os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                            "object_detect", "runs", "积木方块", "best.pt"),
-                        help="Path to YOLO .pt checkpoint")
+                        default=os.path.join(_PROJ_ROOT, "object_detect", "runs",
+                                            "积木方块", "best.pt"))
     parser.add_argument("--conf", type=float, default=0.85)
     parser.add_argument("--iou", type=float, default=0.45)
-    parser.add_argument("--device", type=str, default="")
     parser.add_argument("--cam-width", type=int, default=640)
     parser.add_argument("--cam-height", type=int, default=480)
     parser.add_argument("--cam-fps", type=int, default=30)
-    parser.add_argument("--arm-dev", type=str, default="/dev/ttyUSB0",
-                        help="Serial device for head–arm")
+    parser.add_argument("--arm-dev", type=str, default="/dev/ttyUSB0")
     parser.add_argument("--arm-baud", type=int, default=1_000_000)
     parser.add_argument("--urdf", type=str, default="")
     parser.add_argument("--no-head", action="store_true",
-                        help="Disable head control (detection only)")
+                        help="Disable head control")
+    parser.add_argument("--gpu-device", type=str, default="cuda:0",
+                        help="CUDA device for GPU inference")
+    parser.add_argument("--infer-size", type=int, nargs=2, default=[320, 240],
+                        help="Width height for inference (default: 320 240)")
+    parser.add_argument("--detect-every", type=int, default=3,
+                        help="Run detection every N frames")
     args = parser.parse_args()
 
-    # ── Camera ─────────────────────────────────────────────────────────
-    print("[Init] RealSense camera ...")
+    # ── Camera (bb_d1) ─────────────────────────────────────────────────
+    print("[Init] Camera ...")
     cam = D1CameraPrimitive(width=args.cam_width, height=args.cam_height, fps=args.cam_fps)
     info = cam.info()
     print(f"       {info['model']} {info['width']}x{info['height']}@{info['fps']}fps")
 
-    # ── Head ───────────────────────────────────────────────────────────
-    head: HeadController | None = None
+    # ── Head (bb_d1) ───────────────────────────────────────────────────
+    head: Optional[HeadController] = None
     if not args.no_head:
         print(f"[Init] Head on {args.arm_dev} ...")
         head = HeadController(dev=args.arm_dev, urdf_path=args.urdf, baudrate=args.arm_baud)
         print(f"       yaw={head.yaw_deg:+.0f}°  pitch={head.pitch_deg:+.0f}°")
-    else:
-        print("[Init] Head control disabled (--no-head).")
 
-    # ── Model ──────────────────────────────────────────────────────────
-    print(f"[Init] Model: {args.model}")
-    model = load_model(args.model, device=args.device)
-    print(f"       Classes: {list(model.names.values())}")
+    # ── Detector (GPU subprocess in bb_gpu env) ───────────────────────
+    print(f"[Init] GPU detector: {args.model}")
+    detector = GPUClient(args.model, device=args.gpu_device)
 
-    # ── Help banner ────────────────────────────────────────────────────
+    infer_size = tuple(args.infer_size)
+
+    # ── Help ───────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
     if head:
-        print("\n" + "=" * 60)
-        print("  A/D yaw ←→   W/S pitch ↑↓   H home   Q/ESC quit")
-        print("=" * 60 + "\n")
+        print("  A/D yaw  W/S pitch  H home  Q/ESC quit")
+    else:
+        print("  Q/ESC quit")
+    print("  GPU: RTX 5090 (bb_gpu)")
+    print("=" * 60 + "\n")
 
     # ── Loop ───────────────────────────────────────────────────────────
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     frame_count = 0
-    DETECT_EVERY_N = 5            # run YOLO every N frames
-    INFER_SIZE = (320, 240)       # resize to this before inference (CPU speed)
-    last_detections = []          # keep showing last result between inferences
+    last_detections: List = []
 
     try:
         while True:
             t0 = time.time()
 
-            rgb_full = cam.snapshot(filtered=False)
+            rgb = cam.snapshot(filtered=False)
 
-            # ── YOLO (resize + skip frames for CPU speed) ─────────────
+            # ── Inference (skip frames) ────────────────────────────────
             t_infer = 0.0
-            if frame_count % DETECT_EVERY_N == 0:
-                rgb_small = cv2.resize(rgb_full, INFER_SIZE, interpolation=cv2.INTER_AREA)
-                t_infer_start = time.time()
-                dets_small = detect_objects_in_frame(
-                    model, rgb_small, conf_thres=args.conf, iou_thres=args.iou,
-                )
-                t_infer = time.time() - t_infer_start
-                # Scale detection coords back to full resolution
-                sx = rgb_full.shape[1] / rgb_small.shape[1]
-                sy = rgb_full.shape[0] / rgb_small.shape[0]
-                last_detections = [
-                    ((u * sx, v * sy, w * sx, h * sy, r), s, c, n)
-                    for (u, v, w, h, r), s, c, n in dets_small
-                ]
+            if frame_count % args.detect_every == 0:
+                try:
+                    dets, t_infer = detector.infer(
+                        rgb, args.conf, args.iou, infer_size,
+                    )
+                    last_detections = dets
+                except (EOFError, BrokenPipeError) as e:
+                    print(f"[Error] GPU server: {e}")
+                    last_detections = []
 
-            # Annotate (always draw last known detections on full-res)
-            vis = cv2.cvtColor(rgb_full, cv2.COLOR_RGB2BGR)
+            # ── Annotate ────────────────────────────────────────────────
+            vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
             for (u, v, w, h, r), score, cls_id, cls_name in last_detections:
-                draw_box(vis, u, v, w, h, np.rad2deg(r),
+                _draw_box(vis, u, v, w, h, np.rad2deg(r),
                          f"{cls_name}: {score:.2f}")
                 cv2.circle(vis, (int(u), int(v)), 4, (0, 0, 255), -1)
 
-            # Overlay info
+            # Overlay
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-6)
-            cv2.putText(vis, f"FPS: {fps:.1f}  infer: {t_infer*1000:.0f}ms",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(vis, f"Detections: {len(last_detections)}",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            gpu_label = "GPU" if not args.no_gpu else "CPU"
+            cv2.putText(vis, f"FPS: {fps:.1f}  GPU: {t_infer*1000:.0f}ms",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(vis, f"Dets: {len(last_detections)}",
+                        (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             if head:
                 cv2.putText(vis,
                             f"Head yaw: {head.yaw_deg:+.0f}  pitch: {head.pitch_deg:+.0f}",
-                            (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                            (255, 200, 0), 2)
+                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
             cv2.imshow(WINDOW, vis)
 
-            # ── Keyboard (case-insensitive) ────────────────────────────
-            raw = cv2.waitKey(5)  # 5ms = better key capture than 1ms
+            # ── Keyboard ───────────────────────────────────────────────
+            raw = cv2.waitKey(5)
             key = raw & 0xFF
 
-            if key == 27 or key == ord('q') or key == ord('Q'):
+            if key == 27 or key in (ord('q'), ord('Q')):
                 break
 
             if head:
@@ -222,6 +291,7 @@ def main() -> None:
         cam.close()
         if head:
             head.close()
+        detector.close()
         cv2.destroyAllWindows()
 
 
