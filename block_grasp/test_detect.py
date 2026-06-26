@@ -190,7 +190,7 @@ def main():
             fps = 1.0 / max(dt, 1e-6)
             cv2.putText(vis, f"FPS: {fps:.1f}  thread: {t_infer*1000:.0f}ms",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(vis, f"Dets: {len(last_detections)}",
+            cv2.putText(vis, f"Dets: {len(dets)}",
                         (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             if head:
                 cv2.putText(vis,
