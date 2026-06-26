@@ -93,15 +93,15 @@ def main():
                                             "积木方块", "best.pt"))
     parser.add_argument("--conf", type=float, default=0.85)
     parser.add_argument("--iou", type=float, default=0.45)
-    parser.add_argument("--cam-width", type=int, default=640)
-    parser.add_argument("--cam-height", type=int, default=480)
+    parser.add_argument("--cam-width", type=int, default=1280)
+    parser.add_argument("--cam-height", type=int, default=720)
     parser.add_argument("--cam-fps", type=int, default=30)
     parser.add_argument("--arm-dev", type=str, default="/dev/ttyUSB0")
     parser.add_argument("--arm-baud", type=int, default=1_000_000)
     parser.add_argument("--urdf", type=str, default="")
     parser.add_argument("--no-head", action="store_true")
-    parser.add_argument("--infer-w", type=int, default=320, help="Inference width")
-    parser.add_argument("--infer-h", type=int, default=240, help="Inference height")
+    parser.add_argument("--infer-w", type=int, default=640, help="Inference width")
+    parser.add_argument("--infer-h", type=int, default=360, help="Inference height")
     args = parser.parse_args()
 
     # ── Camera ───────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ def main():
 
     # ── Loop ─────────────────────────────────────────────────────────
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, args.cam_width * 2, args.cam_height * 2)
+    cv2.resizeWindow(WINDOW, args.cam_width, args.cam_height)
     frame_count = 0
     infer_size = (args.infer_w, args.infer_h)
     # Shared state for background inference thread
@@ -198,8 +198,7 @@ def main():
                             f"Head: yaw={head.yaw_deg:+.0f}  pitch={head.pitch_deg:+.0f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
-            vis_big = cv2.resize(vis, (args.cam_width * 2, args.cam_height * 2))
-            cv2.imshow(WINDOW, vis_big)
+            cv2.imshow(WINDOW, vis)
 
             # ── Keys ─────────────────────────────────────────────────
             raw = cv2.waitKey(5)
