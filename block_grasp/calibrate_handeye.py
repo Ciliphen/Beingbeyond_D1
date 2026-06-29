@@ -2,16 +2,22 @@
 """
 Hand-eye calibration: pixel ↔ table coordinates (2D homography).
 
-IMPORTANT: Fix the head at a known position before calibration.
-           DO NOT move the head during or after calibration!
-           Detection/grasping must use the SAME head position.
+IMPORTANT: Keep the head still during calibration!
+           The head angles are saved and must be restored for detection.
 
 Flow:
-  1. Click a reference point on the table in the camera view
-  2. Use WASD/QE to move EE tip to that exact physical point
-  3. Press SPACE to record a (pixel, world) pair
-  4. Repeat 6+ times for different points across the table
-  5. Press C to compute and save the homography matrix
+  1. Adjust head with WASD to look at the table, then H to lock head
+  2. Click a reference point on the table in the camera view (green cross)
+  3. Move EE tip to that exact physical point (WASD/ZX + orientation keys)
+  4. SPACE → record a (pixel, world) pair
+  5. Repeat 6+ times across the table
+  6. C → compute homography, save to calibration file
+
+Saved file (handeye_calib.npz) contains:
+  - H: 3×3 homography matrix
+  - head_yaw, head_pitch: head angles at calibration time
+  - pixel_pts, world_pts: recorded pairs (for debug)
+  - mean_err_mm: calibration error
 
 Usage:
     conda activate bb_d1
@@ -34,12 +40,21 @@ from camera.d1_camera_primitive import D1CameraPrimitive
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
+from beingbeyond_d1_sdk.dex_hand import DexHand
 
-SAVE_PATH = os.path.join(os.path.dirname(__file__), "handeye_homography.npy")
+SAVE_PATH = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
+
 STEP = 0.01
 Z_STEP = 0.01
-MAX_DXYZ = np.array([0.3, 0.3, 0.2])
-IK_FAIL_THR = 0.05
+ORI_STEP = math.radians(5.0)
+MAX_OFFSET = np.array([0.30, 0.30, 0.15])
+IK_FAIL_THR = 0.10
+
+
+def _rot_x(a): c, s = math.cos(a), math.sin(a); return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=float)
+def _rot_y(a): c, s = math.cos(a), math.sin(a); return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=float)
+def _rot_z(a): c, s = math.cos(a), math.sin(a); return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=float)
+def _ortho(M): U, _, Vt = np.linalg.svd(M); return U @ Vt
 
 
 def _getch(timeout=0.01):
@@ -64,58 +79,99 @@ def _on_mouse(event, x, y, flags, param):
         param["click"] = (x, y)
 
 
+# ── Load existing calibration ─────────────────────────────────────────────
+
+def load_calib():
+    """Return (H, head_yaw, head_pitch) or (None, None, None)."""
+    if os.path.exists(SAVE_PATH):
+        d = np.load(SAVE_PATH, allow_pickle=True)
+        H = d["H"]
+        head_yaw = float(d["head_yaw"])
+        head_pitch = float(d["head_pitch"])
+        mean_err = float(d["mean_err_mm"])
+        n_pairs = len(d["pixel_pts"])
+        print(f"[Load] Existing calibration: {n_pairs} pairs, error={mean_err:.1f}mm")
+        print(f"       Head: yaw={head_yaw:.1f}°  pitch={head_pitch:.1f}°")
+        return H, head_yaw, head_pitch
+    return None, None, None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
 def main():
     print("\033[91m⚠ 急停按钮请保持触手可及！\033[0m")
-    print("\033[93m⚠ 校准期间头部不要移动！之后抓取时也保持头部在同一位置。\033[0m\n")
+    print("\033[93m⚠ 校准期间头部不要移动！\033[0m\n")
+
+    # ── Check for existing calibration ─────────────────────────────────
+    existing = os.path.exists(SAVE_PATH)
+    if existing:
+        H_old, hy_old, hp_old = load_calib()
+        print("  Already calibrated. Overwrite? (y/N)")
+        if input("  > ").strip().lower() != 'y':
+            print("  Exiting.")
+            return
 
     urdf = get_default_urdf_path()
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
 
-    # ── Init robot ────────────────────────────────────────────────────
+    # ── Init hardware ──────────────────────────────────────────────────
     print("[Init] Robot ...")
     robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
+    hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
     print("[Init] Camera ...")
     cam = D1CameraPrimitive(width=1280, height=720, fps=30)
 
-    # ── Safe posture ──────────────────────────────────────────────────
+    # ── Safe posture ───────────────────────────────────────────────────
     print("[Init] Safe posture ...")
     q_init = np.radians([0, 0, 0, -60, 60, 0, 0, 0])
     robot.set_positions(q_init)
     robot.wait_until_reached(q_init, active_joint_indices=range(8))
     time.sleep(0.3)
+    hand.set_joint_pos([0.0, 0.8, 0.0, 0.0, 0.0, 0.0])  # open
 
+    # ── Read current state ─────────────────────────────────────────────
     q_cur = np.asarray(robot.get_positions(), dtype=float)
     q_head, q_arm = kin.split_q(q_cur)
     T0 = kin.ee_in_base(q_head, q_arm)
-    p0 = T0[:3, 3].copy()
-    R0 = T0[:3, :3].copy()
-    p_des = p0.copy()
+    p_des = T0[:3, 3].copy()
+    R_des = T0[:3, :3].copy()
+    p0 = p_des.copy()
+    R0 = R_des.copy()
+    # Locked head position (will be saved)
+    head_yaw_locked = q_head[0]
+    head_pitch_locked = q_head[1]
+    head_locked = False
+
     print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})")
+    print(f"       Head: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
 
-    # ── Calibration state ─────────────────────────────────────────────
-    pixel_pts = []   # (u, v) pixel
-    world_pts = []   # (x, y) world
+    # ── Calibration state ──────────────────────────────────────────────
+    pixel_pts = []
+    world_pts = []
     click_state = {"click": None}
-    last_click = None  # (u, v)
+    last_click = None
 
-    WINDOW = "Calibration  |  Click → WASD move EE → SPACE record  |  C=compute  Q=quit"
+    WINDOW = "Hand-Eye Calibration"
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, 1280, 720)
     cv2.setMouseCallback(WINDOW, _on_mouse, click_state)
 
     print("\n" + "=" * 60)
-    print("  1. Click point on image")
-    print("  2. WASD/ZX → move EE tip to that point")
-    print("  3. SPACE → record pair")
+    print("  0. Move head to look at table, then press H to LOCK head")
+    print("  1. Click a reference point on the table")
+    print("  2. Move EE tip to that physical point (WASD/ZX + UO/IK/JL)")
+    print("  3. Press SPACE to record a pair")
     print("  4. Repeat 6+ times across the table")
-    print("  5. C → compute & save homography")
+    print("  5. Press C to compute & save")
+    print("  Keys: WASD ZX = position  UO/IK/JL = orientation")
+    print("        H = lock head  R = reset EE  Q = quit")
     print("=" * 60 + "\n")
 
     fd, old = _raw_mode()
 
     try:
         while True:
-            # ── Camera frame ──────────────────────────────────────────
+            # ── Camera ────────────────────────────────────────────────
             rgb = cam.snapshot(filtered=False)
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
@@ -123,23 +179,31 @@ def main():
             if click_state["click"] is not None:
                 last_click = click_state["click"]
                 click_state["click"] = None
-                print(f"\n[Click] ({last_click[0]}, {last_click[1]}) — move EE here, then SPACE")
+                print(f"\n[Click] ({last_click[0]}, {last_click[1]}) → move EE here, then SPACE")
 
+            # Draw markers
             if last_click is not None:
                 cv2.drawMarker(vis, last_click, (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
-
-            # Draw recorded pairs
-            for (u, v), (wx, wy) in zip(pixel_pts, world_pts):
+            for i, ((u, v), (wx, wy)) in enumerate(zip(pixel_pts, world_pts)):
                 cv2.circle(vis, (int(u), int(v)), 6, (255, 100, 0), -1)
+                cv2.putText(vis, f"#{i+1}", (int(u)+10, int(v)-5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1)
 
-            # Current EE position
+            # ── EE position ────────────────────────────────────────────
             q_cur = np.asarray(robot.get_positions(), dtype=float)
             q_head, q_arm = kin.split_q(q_cur)
             T_cur = kin.ee_in_base(q_head, q_arm)
             ex, ey, ez = T_cur[0, 3], T_cur[1, 3], T_cur[2, 3]
 
+            # ── Overlay ────────────────────────────────────────────────
+            status = "HEAD LOCKED ✅" if head_locked else "HEAD FREE — press H to lock"
+            cv2.putText(vis, status, (15, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0) if head_locked else (0, 0, 255), 3)
             cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})  Pairs: {len(pixel_pts)}",
-                        (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+                        (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(vis, f"Head: yaw={math.degrees(q_head[0]):.0f} pitch={math.degrees(q_head[1]):.0f}",
+                        (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
             cv2.imshow(WINDOW, vis)
             cv2.waitKey(5)
 
@@ -150,22 +214,37 @@ def main():
 
             moved = False
 
-            if ch == '\x1b' or ch == 'q':
+            if ch == 'q' or ch == '\x1b':
                 break
 
-            elif ch == ' ' and last_click is not None:
-                pixel_pts.append(last_click)
-                world_pts.append((ex, ey))
-                n = len(pixel_pts)
-                print(f"[#{n}] pixel=({last_click[0]},{last_click[1]}) → world=({ex:.3f},{ey:.3f})")
-                last_click = None
+            # ── Lock head ─────────────────────────────────────────────
+            elif ch == 'h':
+                if not head_locked:
+                    head_yaw_locked = q_head[0]
+                    head_pitch_locked = q_head[1]
+                    head_locked = True
+                    print(f"  🔒 Head LOCKED: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
+                else:
+                    head_locked = False
+                    print("  🔓 Head UNLOCKED")
 
-            elif ch == ' ' and last_click is None:
-                print("  ⚠ Click a point first!")
+            # ── Record pair ───────────────────────────────────────────
+            elif ch == ' ':
+                if not head_locked:
+                    print("  ⚠ Lock head first! (press H)")
+                elif last_click is None:
+                    print("  ⚠ Click a point first!")
+                else:
+                    pixel_pts.append(last_click)
+                    world_pts.append((ex, ey))
+                    n = len(pixel_pts)
+                    print(f"  ✅ Pair #{n}: pixel=({last_click[0]},{last_click[1]}) → world=({ex:.3f},{ey:.3f})")
+                    last_click = None
 
+            # ── Compute ───────────────────────────────────────────────
             elif ch in ('c', 'C'):
                 if len(pixel_pts) < 4:
-                    print(f"  Need ≥4 pairs, have {len(pixel_pts)}")
+                    print(f"  ⚠ Need ≥4 pairs, have {len(pixel_pts)}")
                 else:
                     P = np.array(pixel_pts, dtype=float)
                     W = np.array(world_pts, dtype=float)
@@ -183,29 +262,71 @@ def main():
                     Wp = (H @ Ph.T).T
                     Wp /= Wp[:, 2:3]
                     errs = np.linalg.norm(W - Wp[:, :2], axis=1) * 1000
-                    print(f"\n  Homography (3×3):\n{H}")
-                    print(f"  Errors: mean={errs.mean():.1f}mm  max={errs.max():.1f}mm")
+
+                    print(f"\n{'='*50}")
+                    print(f"  Homography H (3×3):")
+                    for row in H:
+                        print(f"    {row}")
+                    print(f"  Errors per pair (mm): {[f'{e:.1f}' for e in errs]}")
+                    print(f"  Mean: {errs.mean():.1f}mm  Max: {errs.max():.1f}mm")
+                    print(f"  Head: yaw={math.degrees(head_yaw_locked):.1f}°  pitch={math.degrees(head_pitch_locked):.1f}°")
+
                     if errs.mean() < 10:
-                        np.save(SAVE_PATH, H)
+                        np.savez(
+                            SAVE_PATH,
+                            H=H,
+                            head_yaw=head_yaw_locked,
+                            head_pitch=head_pitch_locked,
+                            pixel_pts=np.array(pixel_pts),
+                            world_pts=np.array(world_pts),
+                            mean_err_mm=errs.mean(),
+                        )
                         print(f"  ✅ Saved → {SAVE_PATH}")
                     else:
-                        print(f"  ⚠ Error too large. Add more pairs or redo.")
+                        print(f"  ⚠ Error too large ({errs.mean():.1f}mm). Add more pairs or redo.")
+                    print(f"{'='*50}\n")
 
-            # ── Teleop ────────────────────────────────────────────────
+            # ── Head movement (only when unlocked) ─────────────────────
+            elif not head_locked:
+                if ch == 'w':      head_yaw_locked += ORI_STEP * 2
+                elif ch == 's':    head_yaw_locked -= ORI_STEP * 2
+                elif ch == 'a':    head_pitch_locked -= ORI_STEP
+                elif ch == 'd':    head_pitch_locked += ORI_STEP
+                else:
+                    continue
+                # Send head-only command
+                q_cmd = np.asarray(robot.get_positions(), dtype=float)
+                q_cmd[0] = head_yaw_locked
+                q_cmd[1] = head_pitch_locked
+                robot.set_positions(q_cmd)
+                q_head, q_arm = kin.split_q(q_cmd)
+                continue
+
+            # ── EE teleop ─────────────────────────────────────────────
             elif ch == 'w':    p_des[0] += STEP; moved = True
             elif ch == 's':    p_des[0] -= STEP; moved = True
             elif ch == 'a':    p_des[1] += STEP; moved = True
             elif ch == 'd':    p_des[1] -= STEP; moved = True
             elif ch == 'z':    p_des[2] += Z_STEP; moved = True
             elif ch == 'x':    p_des[2] -= Z_STEP; moved = True
-            elif ch == 'r':    p_des = p0.copy(); print("  ↺ reset")
+            elif ch == 'u':    R_des = _ortho(_rot_x(+ORI_STEP) @ R_des); moved = True
+            elif ch == 'o':    R_des = _ortho(_rot_x(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'i':    R_des = _ortho(_rot_y(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'k':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
+            elif ch == 'j':    R_des = _ortho(_rot_z(+ORI_STEP) @ R_des); moved = True
+            elif ch == 'l':    R_des = _ortho(_rot_z(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'r':
+                p_des = p0.copy(); R_des = R0.copy()
+                q_head, q_arm = kin.split_q(q_init)
+                moved = True
+                print("  ↺ EE reset")
 
             if moved:
                 off = p_des - p0
-                off = np.clip(off, -MAX_DXYZ, MAX_DXYZ)
+                off = np.clip(off, -MAX_OFFSET, MAX_OFFSET)
                 p_des = p0 + off
                 T_tgt = np.eye(4)
-                T_tgt[:3, :3] = R0
+                T_tgt[:3, :3] = R_des
                 T_tgt[:3, 3] = p_des
                 try:
                     q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
@@ -219,6 +340,8 @@ def main():
         print("\n[Exit]")
     finally:
         _restore(fd, old)
+        hand.open_hand()
+        hand.close_can()
         cam.close()
         robot.close()
         cv2.destroyAllWindows()
