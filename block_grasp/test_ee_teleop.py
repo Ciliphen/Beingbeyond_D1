@@ -118,6 +118,7 @@ def main():
                 p_des = p0.copy()
                 R_des = R0.copy()
                 q_head, q_arm = kin.split_q(q_init)
+                moved = True
                 print("  ↺ reset to start")
             # ── Quit ──────────────────────────────────────────────────
             elif ch == '\x1b':  # ESC
