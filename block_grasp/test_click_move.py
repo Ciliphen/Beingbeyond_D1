@@ -137,9 +137,23 @@ def main():
                 _click_uv = None
 
                 try:
-                    # Pixel → camera 3D
-                    Xc, Yc, Zc = pixel_to_camera_3d(u, v, depth_m, intrinsics, sample_radius=5)
-                    print(f"\n[Click] pixel=({u},{v})  cam=({Xc:.3f},{Yc:.3f},{Zc:.3f})")
+                    # Scale click coords + intrinsics from RGB → depth resolution
+                    dh, dw = depth_m.shape[:2]
+                    rh, rw = rgb.shape[:2]
+                    sx = dw / rw
+                    sy = dh / rh
+                    u_d = int(u * sx)
+                    v_d = int(v * sy)
+                    d_intrin = {
+                        "fx": intrinsics["fx"] * sx,
+                        "fy": intrinsics["fy"] * sy,
+                        "cx": intrinsics["cx"] * sx,
+                        "cy": intrinsics["cy"] * sy,
+                        "width": dw, "height": dh,
+                    }
+
+                    Xc, Yc, Zc = pixel_to_camera_3d(u_d, v_d, depth_m, d_intrin, sample_radius=2)
+                    print(f"\n[Click] rgb=({u},{v})  depth=({u_d},{v_d})  cam=({Xc:.3f},{Yc:.3f},{Zc:.3f})")
 
                     # Camera → base
                     q_full = np.asarray(robot.get_positions(), dtype=float)
