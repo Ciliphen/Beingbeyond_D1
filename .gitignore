@@ -80,3 +80,4 @@ venv.bak/
 todo.txt*.pt
 object_detect/runs/
 *.pt
+dataset/
