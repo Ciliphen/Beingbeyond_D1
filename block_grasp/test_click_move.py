@@ -205,8 +205,9 @@ def main():
                         q_head, q_arm = kin.split_q(q_full)
                         T_base_cam = kin.camera_in_base(q_head, q_arm)
                         x, y, z = camera_to_base_3d((Xc, Yc, Zc), T_base_cam)
-                        print(f"        T_base_cam pos: {T_base_cam[:3,3]}")
-                        print(f"        arm reachable? z_workspace≈[-0.1, 0.5]m")
+                        print(f"        T_base_cam:\n{T_base_cam}")
+                        print(f"        cam XYZ=({Xc:.3f},{Yc:.3f},{Zc:.3f})")
+                        print(f"        → base=({x:.3f},{y:.3f},{z:.3f})")
                         z_ee = z + z_offset
                         tgt = np.array([x, y, z_ee, 0, 0, 0, 1], dtype=float)
                         q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
