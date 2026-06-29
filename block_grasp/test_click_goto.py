@@ -24,7 +24,7 @@ from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 CALIB = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
 IK_FAIL_THR = 0.10
 Z_SAFE = 0.25     # approach height
-Z_TOUCH = 0.10    # table height (higher = easier to reach)
+Z_TOUCH = 0.18    # height above table (arm can't reach below ~0.15)
 
 
 def main():
