@@ -121,17 +121,15 @@ def main():
     print("[Init] Camera ...")
     cam = D1CameraPrimitive(width=1280, height=720, fps=30)
 
-    # ── Safe posture ───────────────────────────────────────────────────
+    # ── Default setup (same as click_goto) ────────────────────────────
     print("[Init] Safe posture ...")
     q_init = np.radians([0, 0, 0, -60, 60, 0, 0, 0])
     robot.set_positions(q_init)
     robot.wait_until_reached(q_init, active_joint_indices=range(8))
     time.sleep(0.3)
-    hand_closed = True
-    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])  # closed for precision
-    print(f"       Hand: closed (fingertip for precise pointing)")
+    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])
 
-    # ── Fixed head position ──────────────────────────────────────────
+    # Fixed head
     HEAD_YAW = math.radians(-10.0)
     HEAD_PITCH = math.radians(35.0)
     last_q = np.asarray(robot.get_positions(), dtype=float)
@@ -140,14 +138,41 @@ def main():
     robot.set_positions(last_q)
     robot.wait_until_reached(last_q, active_joint_indices=[0, 1])
     time.sleep(0.3)
-    q_cur = np.asarray(robot.get_positions(), dtype=float)
-    q_head, q_arm = kin.split_q(q_cur)
+    q_head, q_arm = kin.split_q(np.asarray(robot.get_positions(), dtype=float))
+
+    # Fixed RPY (same as click_goto default)
+    from scipy.spatial.transform import Rotation as _R
+    R_des = _R.from_euler('xyz', [178, 61, -175], degrees=True).as_matrix()
+
+    # Lift to safe height + rotate to target RPY
+    T_cur = kin.ee_in_base(q_head, q_arm)
+    p_tgt = T_cur[:3,3].copy(); p_tgt[2] = 0.25
+    T_lift = np.eye(4); T_lift[:3,:3] = T_cur[:3,:3]; T_lift[:3,3] = p_tgt
+    q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_lift, q_head, q_arm)
+    if err < 0.05:
+        cmd = np.concatenate([q_hs, q_as]); cmd[0]=HEAD_YAW; cmd[1]=HEAD_PITCH
+        robot.set_positions(cmd); robot.wait_until_reached(cmd, active_joint_indices=range(2,8))
+        q_head, q_arm = kin.split_q(cmd)
+
+    q0 = _R.from_matrix(kin.ee_in_base(q_head, q_arm)[:3,:3]).as_quat()
+    q1 = _R.from_matrix(R_des).as_quat()
+    T_cur = kin.ee_in_base(q_head, q_arm); p_cur = T_cur[:3,3]
+    omega = np.arccos(np.clip(np.dot(q0, q1), -1, 1))
+    n = max(1, math.ceil(abs(omega)*2 / 0.05))
+    for i in range(n):
+        a = (i+1)/n; qi = q0 if abs(omega)<1e-10 else (np.sin((1-a)*omega)*q0 + np.sin(a*omega)*q1)/np.sin(omega)
+        T_rt = np.eye(4); T_rt[:3,:3] = _R.from_quat(qi).as_matrix(); T_rt[:3,3] = p_cur
+        q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_rt, q_head, q_arm)
+        if err < 0.05:
+            cmd = np.concatenate([q_hs, q_as]); cmd[0]=HEAD_YAW; cmd[1]=HEAD_PITCH
+            robot.set_positions(cmd); time.sleep(0.02)
+            q_head, q_arm = kin.split_q(cmd)
+
     T0 = kin.ee_in_base(q_head, q_arm)
-    p_des = T0[:3, 3].copy()
-    R_des = T0[:3, :3].copy()
-    p0 = p_des.copy()
-    R0 = R_des.copy()
-    print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})")
+    p_des = T0[:3, 3].copy(); p0 = p_des.copy()
+    R0 = T0[:3,:3].copy()
+    rpy = _R.from_matrix(R0).as_euler('xyz', degrees=True)
+    print(f"       EE: ({p0[0]:.3f},{p0[1]:.3f},{p0[2]:.3f})  RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
     print(f"       Head: yaw={math.degrees(HEAD_YAW):.0f}°  pitch={math.degrees(HEAD_PITCH):.0f}°")
 
     # ── Calibration state ──────────────────────────────────────────────
