@@ -131,7 +131,15 @@ def main():
     hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])  # closed for precision
     print(f"       Hand: closed (fingertip for precise pointing)")
 
-    # ── Read current state ─────────────────────────────────────────────
+    # ── Fixed head position ──────────────────────────────────────────
+    HEAD_YAW = math.radians(-10.0)
+    HEAD_PITCH = math.radians(31.0)
+    last_q = np.asarray(robot.get_positions(), dtype=float)
+    last_q[0] = HEAD_YAW
+    last_q[1] = HEAD_PITCH
+    robot.set_positions(last_q)
+    robot.wait_until_reached(last_q, active_joint_indices=[0, 1])
+    time.sleep(0.3)
     q_cur = np.asarray(robot.get_positions(), dtype=float)
     q_head, q_arm = kin.split_q(q_cur)
     T0 = kin.ee_in_base(q_head, q_arm)
@@ -139,14 +147,8 @@ def main():
     R_des = T0[:3, :3].copy()
     p0 = p_des.copy()
     R0 = R_des.copy()
-    # Locked head position (will be saved)
-    head_yaw_locked = q_head[0]
-    head_pitch_locked = q_head[1]
-    head_locked = False
-
-    last_q = np.asarray(robot.get_positions(), dtype=float)  # track to avoid drift
     print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})")
-    print(f"       Head: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
+    print(f"       Head: yaw={math.degrees(HEAD_YAW):.0f}°  pitch={math.degrees(HEAD_PITCH):.0f}°")
 
     # ── Calibration state ──────────────────────────────────────────────
     pixel_pts = []
@@ -198,9 +200,9 @@ def main():
             ex, ey, ez = T_cur[0, 3], T_cur[1, 3], T_cur[2, 3]
 
             # ── Overlay ────────────────────────────────────────────────
-            status = "HEAD LOCKED ✅" if head_locked else "HEAD FREE — press H to lock"
+            status = "READY — click point, move EE, SPACE to record"
             cv2.putText(vis, status, (15, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0) if head_locked else (0, 0, 255), 3)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})  Pairs: {len(pixel_pts)}",
                         (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.putText(vis, f"Head: yaw={math.degrees(q_head[0]):.0f} pitch={math.degrees(q_head[1]):.0f}",
@@ -227,21 +229,9 @@ def main():
                 else:
                     hand.set_joint_pos([0.0, 0.8, 0.0, 0.0, 0.0, 0.0])
                 print(f"  🖐 hand {'closed' if hand_closed else 'open'}")
-            elif ch == 'h':
-                if not head_locked:
-                    head_yaw_locked = q_head[0]
-                    head_pitch_locked = q_head[1]
-                    head_locked = True
-                    print(f"  🔒 Head LOCKED: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
-                else:
-                    head_locked = False
-                    print("  🔓 Head UNLOCKED")
-
             # ── Record pair ───────────────────────────────────────────
             elif ch == ' ':
-                if not head_locked:
-                    print("  ⚠ Lock head first! (press H)")
-                elif last_click is None:
+                if last_click is None:
                     print("  ⚠ Click a point first!")
                 else:
                     pixel_pts.append(last_click)
@@ -253,7 +243,7 @@ def main():
             # ── Compute ───────────────────────────────────────────────
             elif ch in ('c', 'C'):
                 if len(pixel_pts) < 4:
-                    print(f"  ⚠ Need ≥4 pairs, have {len(pixel_pts)}")
+                    print(f"  ⚠ Need >=4 pairs, have {len(pixel_pts)}")
                 else:
                     P = np.array(pixel_pts, dtype=float)
                     W = np.array(world_pts, dtype=float)
@@ -273,41 +263,28 @@ def main():
                     errs = np.linalg.norm(W - Wp[:, :2], axis=1) * 1000
 
                     print(f"\n{'='*50}")
-                    print(f"  Homography H (3×3):")
+                    print(f"  Homography H (3x3):")
                     for row in H:
                         print(f"    {row}")
                     print(f"  Errors per pair (mm): {[f'{e:.1f}' for e in errs]}")
                     print(f"  Mean: {errs.mean():.1f}mm  Max: {errs.max():.1f}mm")
-                    print(f"  Head: yaw={math.degrees(head_yaw_locked):.1f}°  pitch={math.degrees(head_pitch_locked):.1f}°")
 
                     if errs.mean() < 10:
                         np.savez(
                             SAVE_PATH,
                             H=H,
-                            head_yaw=head_yaw_locked,
-                            head_pitch=head_pitch_locked,
+                            head_yaw=HEAD_YAW,
+                            head_pitch=HEAD_PITCH,
                             pixel_pts=np.array(pixel_pts),
                             world_pts=np.array(world_pts),
                             mean_err_mm=errs.mean(),
                         )
-                        print(f"  ✅ Saved → {SAVE_PATH}")
+                        print(f"  ✅ Saved -> {SAVE_PATH}")
                     else:
                         print(f"  ⚠ Error too large ({errs.mean():.1f}mm). Add more pairs or redo.")
                     print(f"{'='*50}\n")
 
-            # ── Head movement (only when unlocked, 8/2 pitch  4/6 yaw) ─
-            elif not head_locked and ch in ('8', '2', '4', '6'):
-                if ch == '4':      head_yaw_locked += ORI_STEP * 2
-                elif ch == '6':    head_yaw_locked -= ORI_STEP * 2
-                elif ch == '8':    head_pitch_locked -= ORI_STEP
-                elif ch == '2':    head_pitch_locked += ORI_STEP
-                # Track the last commanded q so arm joints don't drift
-                last_q[0] = head_yaw_locked
-                last_q[1] = head_pitch_locked
-                robot.set_positions(last_q)
-                q_head, q_arm = kin.split_q(last_q)
-
-            # ── EE teleop (only when head locked) ─────────────────────
+            # ── EE teleop ─────────────────────────────────────────────
             elif ch == 'w':    p_des[0] += STEP; moved = True
             elif ch == 's':    p_des[0] -= STEP; moved = True
             elif ch == 'a':    p_des[1] += STEP; moved = True
