@@ -97,29 +97,35 @@ def main():
                 wx, wy = float(w[0]), float(w[1])
                 print(f"\n[Click] ({u},{v}) → world=({wx:.3f}, {wy:.3f})")
 
-                # Move: approach from above → touch
-                for step_name, z_target in [("approach", Z_SAFE), ("touch", Z_TOUCH)]:
-                    p_des[0] = wx
-                    p_des[1] = wy
-                    p_des[2] = z_target
+                # Move: interpolate in 2cm steps from current → approach height
+                T_cur = kin.ee_in_base(q_head, q_arm)
+                p_start = T_cur[:3, 3].copy()
+                p_target = np.array([wx, wy, Z_SAFE])
+                dist = np.linalg.norm(p_target - p_start)
+                n_steps = max(1, int(dist / 0.02))
+
+                for i in range(n_steps):
+                    alpha = (i + 1) / n_steps
+                    interp = p_start + alpha * (p_target - p_start)
                     T_tgt = np.eye(4)
-                    T_tgt[:3, :3] = R_des
-                    T_tgt[:3, 3] = p_des
+                    T_tgt[:3, :3] = T_cur[:3, :3]
+                    T_tgt[:3, 3] = interp
                     try:
                         q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
-                        if np.isnan(err) or err > IK_FAIL_THR:
-                            print(f"  ⚠ IK fail ({step_name}): err={err:.3f}")
+                        if np.isnan(err) or err > 0.05:
+                            print(f"  ⚠ IK fail step {i+1}/{n_steps}: err={err:.3f}")
                             break
                         cmd = np.concatenate([q_hs, q_as])
-                        cmd[0] = head_yaw
-                        cmd[1] = head_pitch
+                        cmd[0] = head_yaw; cmd[1] = head_pitch
                         robot.set_positions(cmd)
                         robot.wait_until_reached(cmd, active_joint_indices=range(2, 8))
                         q_head, q_arm = kin.split_q(cmd)
-                        print(f"  → {step_name} ({wx:.3f},{wy:.3f},{z_target:.3f})")
+                        T_cur = kin.ee_in_base(q_head, q_arm)
                     except Exception as e:
-                        print(f"  ✗ {step_name}: {e}")
+                        print(f"  ✗ step {i+1}: {e}")
                         break
+                else:
+                    print(f"  → ({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})")
 
             # ── Display ────────────────────────────────────────────────
             q_disp = np.asarray(robot.get_positions(), dtype=float)
