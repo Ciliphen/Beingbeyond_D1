@@ -178,8 +178,6 @@ def main():
 
             # ── Keys ───────────────────────────────────────────────────
             key = cv2.waitKey(5) & 0xFF
-            if key != 255 and key != 0:
-                print(f"[Key] code={key} chr='{chr(key) if 32<=key<127 else '?'}'", end="  ")
             if key == 27 or key in (ord('q'), ord('Q')):
                 break
             if key in (ord('a'), ord('A')):   head.step(dyaw=+HEAD_YAW_STEP)
@@ -207,12 +205,16 @@ def main():
                         q_head, q_arm = kin.split_q(q_full)
                         T_base_cam = kin.camera_in_base(q_head, q_arm)
                         x, y, z = camera_to_base_3d((Xc, Yc, Zc), T_base_cam)
+                        print(f"        T_base_cam pos: {T_base_cam[:3,3]}")
+                        print(f"        arm reachable? z_workspace≈[-0.1, 0.5]m")
                         z_ee = z + z_offset
                         tgt = np.array([x, y, z_ee, 0, 0, 0, 1], dtype=float)
                         q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
                         print(f"[{mode.upper()}] base=({x:.3f},{y:.3f},{z:.3f}) z_ee={z_ee:.3f} cost={cost:.3f} it={it}")
+                        # IK already includes head angles (q_hs); don't overwrite
+                        head._yaw = q_hs[0]
+                        head._pitch = q_hs[1]
                         robot.set_positions(np.concatenate([q_hs, q_as]))
-                        head._send()
                         _last_target = np.array([x, y, z_ee])
                     except ValueError as e:
                         print(f"        ❌ {e}")
