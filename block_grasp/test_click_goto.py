@@ -22,10 +22,10 @@ from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 
 CALIB = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
-IK_FAIL_THR = 0.15
+IK_FAIL_THR = 0.10
 Z_SAFE = 0.25     # approach height
 Z_TOUCH = 0.05    # table height
-MAX_OFFSET = np.array([0.15, 0.10, 0.10])
+MAX_OFFSET = np.array([0.30, 0.30, 0.15])
 
 
 def main():
