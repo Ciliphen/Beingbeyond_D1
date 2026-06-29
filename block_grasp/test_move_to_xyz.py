@@ -12,7 +12,7 @@ robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
 hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
 
 # Safe posture
-q_init = np.radians([0, 0, 0, -60, 60, 0, 0, 0])
+q_init = np.radians([0, 0, 0, -30, 30, 0, 0, 0])
 robot.set_positions(q_init)
 robot.wait_until_reached(q_init, active_joint_indices=range(8))
 time.sleep(0.3)
