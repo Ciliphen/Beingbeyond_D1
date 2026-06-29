@@ -31,7 +31,7 @@ def _map_hand(t):
     t = 0.0 if t < 0 else 1.0 if t > 1 else t
     return [b + t * (a - b) for a, b in zip(A, B)]
 IK_FAIL_THR = 0.10
-Z_SAFE = 0.25     # approach height
+Z_SAFE = 0.20     # approach height
 Z_TOUCH = 0.18    # height above table (arm can't reach below ~0.15)
 
 
@@ -77,7 +77,7 @@ def main():
     # ── Startup: lift to safe Z, then rotate to target RPY ────────────
     print("[Init] Lift to safe height ...")
     T_cur = kin.ee_in_base(q_head, q_arm)
-    p_tgt = T_cur[:3,3].copy(); p_tgt[2] = 0.25
+    p_tgt = T_cur[:3,3].copy(); p_tgt[2] = Z_SAFE + 0.05
     T_lift = np.eye(4); T_lift[:3,:3] = T_cur[:3,:3]; T_lift[:3,3] = p_tgt
     q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_lift, q_head, q_arm)
     if err < 0.05:
