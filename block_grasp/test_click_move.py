@@ -201,12 +201,16 @@ def main():
                                     "cx": intrinsics["cx"]*sx, "cy": intrinsics["cy"]*sy,
                                     "width": dw, "height": dh}
                         Xc, Yc, Zc = pixel_to_camera_3d(u_d, v_d, depth_m, d_intrin, sample_radius=2)
+                        # Convert RealSense optical → URDF camera frame convention
+                        #   optical: X→right, Y→down, Z→forward (depth)
+                        #   URDF:    X→right, Y→up,    Z→backward
+                        p_cam_urdf = np.array([Xc, -Yc, -Zc, 1.0], dtype=float)
                         q_full = np.asarray(robot.get_positions(), dtype=float)
                         q_head, q_arm = kin.split_q(q_full)
                         T_base_cam = kin.camera_in_base(q_head, q_arm)
-                        x, y, z = camera_to_base_3d((Xc, Yc, Zc), T_base_cam)
-                        print(f"        T_base_cam:\n{T_base_cam}")
-                        print(f"        cam XYZ=({Xc:.3f},{Yc:.3f},{Zc:.3f})")
+                        p_base = T_base_cam @ p_cam_urdf
+                        x, y, z = float(p_base[0]), float(p_base[1]), float(p_base[2])
+                        print(f"        optical=({Xc:.3f},{Yc:.3f},{Zc:.3f}) urdf=({p_cam_urdf[0]:.3f},{p_cam_urdf[1]:.3f},{p_cam_urdf[2]:.3f})")
                         print(f"        → base=({x:.3f},{y:.3f},{z:.3f})")
                         z_ee = z + z_offset
                         tgt = np.array([x, y, z_ee, 0, 0, 0, 1], dtype=float)
