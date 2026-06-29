@@ -31,6 +31,7 @@ from beingbeyond_d1_sdk.dex_hand import DexHand
 
 STEP = 0.01   # 1cm
 Z_STEP = 0.01
+ORI_STEP = math.radians(5.0)  # 5°
 MAX_OFFSET = np.array([0.30, 0.30, 0.15])
 IK_FAIL_THR = 0.10  # m — relaxed for small workspace
 
@@ -98,7 +99,9 @@ def main():
 
     # ── Help ──────────────────────────────────────────────────────────
     print("\n" + "=" * 55)
-    print("  W/S X±  |  A/D Y±  |  Q/E Z±  |  R reset  |  SPACE hand  |  ESC quit")
+    print("  W/S X±  |  A/D Y±  |  Q/E Z±  |  R reset")
+    print("  U/O roll±  I/K pitch±  J/L yaw±  (5°)")
+    print("  SPACE/B hand close/open  |  H help  |  ESC quit")
     print(f"  Step={STEP*100:.0f}cm  max=({MAX_OFFSET[0]*100:.0f},{MAX_OFFSET[1]*100:.0f},{MAX_OFFSET[2]*100:.0f})cm  IK_thr={IK_FAIL_THR*100:.0f}cm")
     print("=" * 55 + "\n")
 
@@ -137,6 +140,16 @@ def main():
                 pos = HAND_LEVELS[hand_level]
                 hand.set_joint_pos(_map_hand(pos))
                 print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
+            # ── Orientation ──────────────────────────────────────────
+            elif ch == 'u':    R_des = _ortho(_rot_x(+ORI_STEP) @ R_des); moved = True
+            elif ch == 'o':    R_des = _ortho(_rot_x(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'i':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
+            elif ch == 'k':    R_des = _ortho(_rot_y(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'j':    R_des = _ortho(_rot_z(+ORI_STEP) @ R_des); moved = True
+            elif ch == 'l':    R_des = _ortho(_rot_z(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'h':
+                print("\n  W/S X±  A/D Y±  Q/E Z±  U/O roll±  I/K pitch±  J/L yaw±")
+                print("  SPACE hand+  B hand-  R reset\n")
             # ── Reset ─────────────────────────────────────────────────
             elif ch == 'r':
                 p_des = p0.copy()
