@@ -72,7 +72,9 @@ def main():
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
     robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
     hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
-    hand_pos = 0.0  # 0=open, 1=close
+    HAND_LEVELS = [0.0, 0.3, 0.5, 0.65, 0.8, 1.0]   # open → close levels
+    HAND_NAMES  = ["open", "loose", "half", "firm", "tight", "max"]
+    hand_level = 0   # index into HAND_LEVELS
 
     # ── Safe initial posture ──────────────────────────────────────────
     print("[Init] Moving to safe posture ...")
@@ -124,11 +126,17 @@ def main():
                 p_des[2] += Z_STEP; moved = True
             elif ch == 'e':
                 p_des[2] -= Z_STEP; moved = True
-            # ── Hand ──────────────────────────────────────────────────
+            # ── Hand (SPACE = next, B = prev) ─────────────────────────
             elif ch == ' ':
-                hand_pos = 1.0 - hand_pos
-                hand.set_joint_pos(_map_hand(hand_pos))
-                print(f"  🖐 {'close' if hand_pos > 0.5 else 'open'}")
+                hand_level = min(hand_level + 1, len(HAND_LEVELS) - 1)
+                pos = HAND_LEVELS[hand_level]
+                hand.set_joint_pos(_map_hand(pos))
+                print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
+            elif ch == 'b':
+                hand_level = max(hand_level - 1, 0)
+                pos = HAND_LEVELS[hand_level]
+                hand.set_joint_pos(_map_hand(pos))
+                print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
             # ── Reset ─────────────────────────────────────────────────
             elif ch == 'r':
                 p_des = p0.copy()
