@@ -191,11 +191,11 @@ def main():
                 cv2.putText(vis, f"#{i+1}", (int(u)+10, int(v)-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1)
 
-            # ── EE position ────────────────────────────────────────────
-            q_cur = np.asarray(robot.get_positions(), dtype=float)
-            q_head, q_arm = kin.split_q(q_cur)
-            T_cur = kin.ee_in_base(q_head, q_arm)
-            ex, ey, ez = T_cur[0, 3], T_cur[1, 3], T_cur[2, 3]
+            # ── EE position (display only, don't overwrite IK state) ───
+            q_disp = np.asarray(robot.get_positions(), dtype=float)
+            qh_disp, qa_disp = kin.split_q(q_disp)
+            T_disp = kin.ee_in_base(qh_disp, qa_disp)
+            ex, ey, ez = T_disp[0, 3], T_disp[1, 3], T_disp[2, 3]
 
             # ── Overlay ────────────────────────────────────────────────
             status = "READY — click point, move EE, SPACE to record"
@@ -203,7 +203,7 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})  Pairs: {len(pixel_pts)}",
                         (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(vis, f"Head: yaw={math.degrees(q_head[0]):.0f} pitch={math.degrees(q_head[1]):.0f}",
+            cv2.putText(vis, f"Head: yaw={math.degrees(qh_disp[0]):.0f} pitch={math.degrees(qh_disp[1]):.0f}",
                         (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
             cv2.imshow(WINDOW, vis)
