@@ -109,36 +109,56 @@ def main():
                 wx, wy = float(w[0]), float(w[1])
                 print(f"\n[Click] ({u},{v}) → world=({wx:.3f}, {wy:.3f})")
 
-                # Move: interpolate in 2cm steps from current → approach height
+                # Phase 1: Move XY at current height (keep current orientation)
+                # Phase 2: Rotate to target R_des at current position
+                # Phase 3: Lower to approach height
                 T_cur = kin.ee_in_base(q_head, q_arm)
-                p_start = T_cur[:3, 3].copy()
-                p_target = np.array([wx, wy, Z_SAFE])
-                dist = np.linalg.norm(p_target - p_start)
-                n_steps = max(1, int(dist / 0.005))  # 5mm per step = smooth
+                R_cur = T_cur[:3,:3].copy()
+                p_cur = T_cur[:3, 3].copy()
 
-                for i in range(n_steps):
-                    alpha = (i + 1) / n_steps
-                    interp = p_start + alpha * (p_target - p_start)
-                    T_tgt = np.eye(4)
-                    T_tgt[:3, :3] = R_des
-                    T_tgt[:3, 3] = interp
-                    try:
-                        q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
-                        if np.isnan(err) or err > 0.05:
-                            print(f"  ⚠ IK fail step {i+1}/{n_steps}: err={err:.3f}")
+                phases = [
+                    ("move",   np.array([wx, wy, p_cur[2]]),  R_cur),   # XY only
+                    ("orient", p_cur.copy(),                   R_des),   # rotate only
+                    ("lower",  np.array([wx, wy, Z_SAFE]),     R_des),   # down
+                ]
+
+                for phase_name, p_tgt, R_tgt in phases:
+                    dp = np.linalg.norm(p_tgt - p_cur)
+                    dR = np.linalg.norm(R.from_matrix(R_cur).as_rotvec() - R.from_matrix(R_tgt).as_rotvec())
+                    n_steps = max(1, int(max(dp / 0.005, dR / 0.05)))  # 5mm or 3° per step
+
+                    for i in range(n_steps):
+                        alpha = (i + 1) / n_steps
+                        interp_p = p_cur + alpha * (p_tgt - p_cur)
+                        interp_R = R.from_matrix(R_cur).as_rotvec() + alpha * (R.from_matrix(R_tgt).as_rotvec() - R.from_matrix(R_cur).as_rotvec())
+                        interp_R = R.from_rotvec(interp_R).as_matrix()
+
+                        T_tgt = np.eye(4)
+                        T_tgt[:3, :3] = interp_R
+                        T_tgt[:3, 3] = interp_p
+                        try:
+                            q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
+                            if np.isnan(err) or err > 0.05:
+                                if i == 0:
+                                    print(f"  ⚠ IK fail ({phase_name}): err={err:.3f}")
+                                break
+                            cmd = np.concatenate([q_hs, q_as])
+                            cmd[0] = head_yaw; cmd[1] = head_pitch
+                            robot.set_positions(cmd)
+                            time.sleep(0.02)
+                            q_head, q_arm = kin.split_q(cmd)
+                        except Exception as e:
+                            print(f"  ✗ {phase_name}: {e}")
                             break
-                        cmd = np.concatenate([q_hs, q_as])
-                        cmd[0] = head_yaw; cmd[1] = head_pitch
-                        robot.set_positions(cmd)
-                        time.sleep(0.02)  # brief pause to let serial send
-                        q_head, q_arm = kin.split_q(cmd)
+                    else:
                         T_cur = kin.ee_in_base(q_head, q_arm)
-                    except Exception as e:
-                        print(f"  ✗ step {i+1}: {e}")
-                        break
+                        p_cur = T_cur[:3,3].copy()
+                        R_cur = T_cur[:3,:3].copy()
+                        continue
+                    break  # phase failed
                 else:
-                    rpy = R.from_matrix(T_cur[:3,:3]).as_euler('xyz', degrees=True)
-                    print(f"  → ({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
+                    rpy = R.from_matrix(R_cur).as_euler('xyz', degrees=True)
+                    print(f"  → ({p_cur[0]:.3f},{p_cur[1]:.3f},{p_cur[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
 
             # ── Display ────────────────────────────────────────────────
             q_disp = np.asarray(robot.get_positions(), dtype=float)
