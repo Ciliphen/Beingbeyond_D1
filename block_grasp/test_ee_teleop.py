@@ -33,18 +33,24 @@ def main():
     robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
 
-    # Start position: current EE pose
+    # Start position: lift to safe height, then read actual EE
+    print("[Init] Lifting to safe height ...")
     q = np.asarray(robot.get_positions(), dtype=float)
     q_head, q_arm = kin.split_q(q)
     T = kin.ee_in_base(q_head, q_arm)
-    x, y, z = T[0, 3], T[1, 3], T[2, 3]
-    print(f"       EE start: ({x:.3f}, {y:.3f}, {z:.3f})")
-
-    # Palm-down orientation: Z points downward
-    R_down = np.array([[1, 0, 0],
-                       [0, -1, 0],
-                       [0, 0, -1]], dtype=float)
-    q_down = R.from_matrix(R_down).as_quat()  # xyzw
+    x, y, _ = T[0, 3], T[1, 3], T[2, 3]
+    z = 0.25  # safe start height (25cm)
+    R_down = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=float)
+    q_down = R.from_matrix(R_down).as_quat()
+    tgt = np.array([x, y, z, q_down[0], q_down[1], q_down[2], q_down[3]], dtype=float)
+    try:
+        q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
+        robot.set_positions(np.concatenate([q_hs, q_as]))
+        robot.wait_until_reached(np.concatenate([q_hs, q_as]), active_joint_indices=range(2, 8))
+        print(f"       EE start: ({x:.3f}, {y:.3f}, {z:.3f})")
+    except Exception as e:
+        print(f"       ⚠ lift failed: {e}, using current position")
+        z = T[2, 3]
 
     print("\n" + "=" * 50)
     print("  W/S forward/back   A/D left/right   Q/E up/down")
