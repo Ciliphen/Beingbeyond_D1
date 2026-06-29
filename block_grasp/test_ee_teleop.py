@@ -30,8 +30,8 @@ from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 
 STEP = 0.01   # 1cm
 Z_STEP = 0.01
-MAX_OFFSET = np.array([0.3, 0.3, 0.2])
-IK_FAIL_THR = 0.05
+MAX_OFFSET = np.array([0.10, 0.10, 0.10])
+IK_FAIL_THR = 0.10  # m — relaxed for small workspace
 
 
 def _rot_x(a): c,s = math.cos(a), math.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]], dtype=float)
@@ -86,7 +86,7 @@ def main():
     # ── Help ──────────────────────────────────────────────────────────
     print("\n" + "=" * 55)
     print("  W/S X±  |  A/D Y±  |  Q/E Z±  |  R reset  |  ESC quit")
-    print(f"  Step={STEP*100:.0f}cm  max_offset=({MAX_OFFSET[0]:.0f},{MAX_OFFSET[1]:.0f},{MAX_OFFSET[2]:.0f})cm")
+    print(f"  Step={STEP*100:.0f}cm  max=({MAX_OFFSET[0]*100:.0f},{MAX_OFFSET[1]*100:.0f},{MAX_OFFSET[2]*100:.0f})cm  IK_thr={IK_FAIL_THR*100:.0f}cm")
     print("=" * 55 + "\n")
 
     # ── Terminal raw mode ─────────────────────────────────────────────
