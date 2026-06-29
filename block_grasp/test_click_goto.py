@@ -23,6 +23,13 @@ from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 
 CALIB = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
+
+def _map_hand(t):
+    """Map t∈[0,1] to 6D joint positions."""
+    A = [0.64, 0.8, 0.54, 0.58, 0.0, 0.0]
+    B = [0.0,  0.8, 0.0,  0.0,  0.0, 0.0]
+    t = 0.0 if t < 0 else 1.0 if t > 1 else t
+    return [b + t * (a - b) for a, b in zip(A, B)]
 IK_FAIL_THR = 0.10
 Z_SAFE = 0.25     # approach height
 Z_TOUCH = 0.18    # height above table (arm can't reach below ~0.15)
@@ -54,7 +61,10 @@ def main():
     robot.set_positions(q)
     robot.wait_until_reached(q, active_joint_indices=[0, 1])
     time.sleep(0.3)
-    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])  # closed
+    HAND_LEVELS = [0.0, 0.3, 0.5, 0.65, 0.8, 1.0]
+    HAND_NAMES  = ["open", "loose", "half", "firm", "tight", "max"]
+    hand_level = 3  # "firm"
+    hand.set_joint_pos(_map_hand(HAND_LEVELS[hand_level]))
     print("       Ready.")
 
     # ── IK state ──────────────────────────────────────────────────────
@@ -79,7 +89,7 @@ def main():
     cv2.setMouseCallback(WINDOW, _on_mouse)
 
     print("\n  Left-click → move EE to that table position")
-    print("  B → toggle hand open/close")
+    print("  SPACE/B → hand tighter/looser")
     print("  ESC → quit\n")
 
     try:
@@ -140,13 +150,16 @@ def main():
             key = cv2.waitKey(5) & 0xFF
             if key == 27:
                 break
-            if key in (ord('b'), ord('B')):
-                hand_closed = not hand_closed
-                if hand_closed:
-                    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])
-                else:
-                    hand.set_joint_pos([0.0, 0.8, 0.0, 0.0, 0.0, 0.0])
-                print(f"  🖐 {'closed' if hand_closed else 'open'}")
+            if key == ord(' '):
+                hand_level = min(hand_level + 1, len(HAND_LEVELS) - 1)
+                pos = HAND_LEVELS[hand_level]
+                hand.set_joint_pos(_map_hand(pos))
+                print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
+            elif key in (ord('b'), ord('B')):
+                hand_level = max(hand_level - 1, 0)
+                pos = HAND_LEVELS[hand_level]
+                hand.set_joint_pos(_map_hand(pos))
+                print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
 
     except KeyboardInterrupt:
         print("\n[Exit]")
