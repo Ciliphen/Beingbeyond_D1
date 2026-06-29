@@ -51,6 +51,10 @@ def main():
     print(f"  Step: {STEP*100:.0f}cm  Z_step: {Z_STEP*100:.0f}cm  ESC quit")
     print("=" * 50 + "\n")
 
+    cv2.namedWindow("EE Teleop", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("EE Teleop", 400, 200)
+    blank = np.zeros((200, 400, 3), dtype=np.uint8)
+
     try:
         while True:
             # Show current EE position
@@ -59,6 +63,9 @@ def main():
             T = kin.ee_in_base(q_head, q_arm)
             x, y, z = T[0, 3], T[1, 3], T[2, 3]
 
+            cv2.putText(blank, f"EE: ({x:.3f}, {y:.3f}, {z:.3f})", (20, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.imshow("EE Teleop", blank)
             key = cv2.waitKey(100) & 0xFF
 
             moved = False
