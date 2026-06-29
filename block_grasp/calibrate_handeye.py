@@ -133,7 +133,7 @@ def main():
 
     # ── Fixed head position ──────────────────────────────────────────
     HEAD_YAW = math.radians(-10.0)
-    HEAD_PITCH = math.radians(31.0)
+    HEAD_PITCH = math.radians(35.0)
     last_q = np.asarray(robot.get_positions(), dtype=float)
     last_q[0] = HEAD_YAW
     last_q[1] = HEAD_PITCH
@@ -312,9 +312,11 @@ def main():
                     q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
                     if not np.isnan(err) and err <= IK_FAIL_THR:
                         cmd = np.concatenate([q_hs, q_as])
+                        cmd[0] = HEAD_YAW    # force head fixed
+                        cmd[1] = HEAD_PITCH
                         robot.set_positions(cmd)
                         last_q = cmd
-                        q_head, q_arm = q_hs, q_as
+                        q_head, q_arm = kin.split_q(cmd)
                 except Exception:
                     pass
 
