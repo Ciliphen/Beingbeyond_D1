@@ -26,6 +26,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -213,7 +214,10 @@ def main():
                         print(f"        optical=({Xc:.3f},{Yc:.3f},{Zc:.3f}) urdf=({p_cam_urdf[0]:.3f},{p_cam_urdf[1]:.3f},{p_cam_urdf[2]:.3f})")
                         print(f"        → base=({x:.3f},{y:.3f},{z:.3f})")
                         z_ee = z + z_offset
-                        tgt = np.array([x, y, z_ee, 0, 0, 0, 1], dtype=float)
+                        # Point EE downward (finger pointing at table)
+                        R_ee = np.array([[1,0,0],[0,-1,0],[0,0,-1]], dtype=float)  # Z down
+                        qxyzw = R.from_matrix(R_ee).as_quat()
+                        tgt = np.array([x, y, z_ee, qxyzw[0], qxyzw[1], qxyzw[2], qxyzw[3]], dtype=float)
                         q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
                         print(f"[{mode.upper()}] base=({x:.3f},{y:.3f},{z:.3f}) z_ee={z_ee:.3f} cost={cost:.3f} it={it}")
                         # IK already includes head angles (q_hs); don't overwrite
