@@ -137,7 +137,8 @@ def main():
                         print(f"  ✗ step {i+1}: {e}")
                         break
                 else:
-                    print(f"  → ({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})")
+                    rpy = R.from_matrix(T_cur[:3,:3]).as_euler('xyz', degrees=True)
+                    print(f"  → ({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
 
             # ── Display ────────────────────────────────────────────────
             q_disp = np.asarray(robot.get_positions(), dtype=float)
