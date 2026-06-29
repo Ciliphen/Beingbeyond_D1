@@ -143,8 +143,8 @@ def main():
             # ── Orientation ──────────────────────────────────────────
             elif ch == 'u':    R_des = _ortho(_rot_x(+ORI_STEP) @ R_des); moved = True
             elif ch == 'o':    R_des = _ortho(_rot_x(-ORI_STEP) @ R_des); moved = True
-            elif ch == 'i':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
-            elif ch == 'k':    R_des = _ortho(_rot_y(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'i':    R_des = _ortho(_rot_y(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'k':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
             elif ch == 'j':    R_des = _ortho(_rot_z(+ORI_STEP) @ R_des); moved = True
             elif ch == 'l':    R_des = _ortho(_rot_z(-ORI_STEP) @ R_des); moved = True
             elif ch == 'h':
