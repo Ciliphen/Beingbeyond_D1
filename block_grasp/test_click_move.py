@@ -80,19 +80,18 @@ class HeadController:
 
 # ── Marker state ───────────────────────────────────────────────────────────
 _click_uv: Optional[tuple[int, int]] = None
+_last_click_rgb: Optional[tuple[int, int]] = None
 _last_target: Optional[np.ndarray] = None  # (x, y, z) in base frame
 
 
 def _on_mouse(event, x, y, flags, param):
     global _click_uv
     if event == cv2.EVENT_LBUTTONDOWN:
-        _click_uv = (x, y, "touch")   # go to surface
-    elif event == cv2.EVENT_RBUTTONDOWN:
-        _click_uv = (x, y, "above")   # go 5cm above
+        _click_uv = (x, y)  # just record position
 
 
 def main():
-    global _click_uv, _last_target
+    global _click_uv, _last_target, _last_click_rgb
 
     # ── Init ───────────────────────────────────────────────────────────
     print("[Init] Camera ...")
@@ -114,8 +113,9 @@ def main():
     cv2.setMouseCallback(WINDOW, _on_mouse)
 
     print("\n" + "=" * 60)
-    print("  Left click  → move EE to surface point (finger down)")
-    print("  Right click → move EE 5cm above that point")
+    print("  Left click  → move EE to surface (finger down)")
+    print("  G key       → move EE to last-clicked point")
+    print("  M key       → move EE 5cm above last-clicked point")
     print("  A/D/W/S/H   → head control")
     print("  Q/ESC       → quit")
     print("=" * 60 + "\n")
@@ -133,60 +133,14 @@ def main():
 
             # ── Handle click ───────────────────────────────────────────
             if _click_uv is not None:
-                u, v, mode = _click_uv
-                _click_uv = None
+                u, v = _click_uv
+                _click_uv = None  # consumed by display (red crosshair below)
 
-                try:
-                    # Scale click coords + intrinsics from RGB → depth resolution
-                    dh, dw = depth_m.shape[:2]
-                    rh, rw = rgb.shape[:2]
-                    sx = dw / rw
-                    sy = dh / rh
-                    u_d = int(u * sx)
-                    v_d = int(v * sy)
-                    d_intrin = {
-                        "fx": intrinsics["fx"] * sx,
-                        "fy": intrinsics["fy"] * sy,
-                        "cx": intrinsics["cx"] * sx,
-                        "cy": intrinsics["cy"] * sy,
-                        "width": dw, "height": dh,
-                    }
-
-                    Xc, Yc, Zc = pixel_to_camera_3d(u_d, v_d, depth_m, d_intrin, sample_radius=2)
-                    print(f"\n[Click] rgb=({u},{v})  depth=({u_d},{v_d})  cam=({Xc:.3f},{Yc:.3f},{Zc:.3f})")
-
-                    # Camera → base
-                    q_full = np.asarray(robot.get_positions(), dtype=float)
-                    q_head, q_arm = kin.split_q(q_full)
-                    T_base_cam = kin.camera_in_base(q_head, q_arm)
-                    x, y, z = camera_to_base_3d((Xc, Yc, Zc), T_base_cam)
-                    print(f"        base=({x:.3f},{y:.3f},{z:.3f})")
-
-                    # Target pose (finger pointing down)
-                    if mode == "above":
-                        z_ee = z + 0.05  # 5cm above
-                    else:
-                        z_ee = z + 0.02  # slight offset so we don't crash
-
-                    target_quatpose = np.array([x, y, z_ee, 0, 0, 0, 1], dtype=float)
-
-                    # IK solve
-                    q_head_sol, q_arm_sol, cost, iters = kin.ik_ee_quatpose_with_arm_only(
-                        target_quatpose, q_head, q_arm,
-                    )
-                    print(f"        IK cost={cost:.4f} iters={iters}")
-
-                    # Move
-                    q_cmd = np.concatenate([q_head_sol, q_arm_sol])
-                    robot.set_positions(q_cmd)
-                    # Restore head to where user left it
-                    head._send()
-                    _last_target = np.array([x, y, z_ee])
-
-                except ValueError as e:
-                    print(f"        ❌ {e}")
-                except Exception as e:
-                    print(f"        ❌ IK failed: {e}")
+                # Show click marker
+                cv2.drawMarker(vis, (u, v), (0, 255, 0),
+                               cv2.MARKER_CROSS, 20, 2)
+                _last_click_rgb = (u, v)
+                # Store for G/M key trigger below (handled later)
 
             # ── Annotate ────────────────────────────────────────────────
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -230,6 +184,37 @@ def main():
             elif key in (ord('w'), ord('W')): head.step(dpitch=-HEAD_PITCH_STEP)
             elif key in (ord('s'), ord('S')): head.step(dpitch=+HEAD_PITCH_STEP)
             elif key in (ord('h'), ord('H')): head.home(); print("[Head] 0°")
+            elif key in (ord('g'), ord('G'), ord('m'), ord('M')):
+                if _last_click_rgb is None:
+                    print("[Move] Click first, then press G/M")
+                else:
+                    u_rgb, v_rgb = _last_click_rgb
+                    z_offset = 0.05 if key in (ord('m'), ord('M')) else 0.02
+                    mode = "above" if key in (ord('m'), ord('M')) else "touch"
+                    try:
+                        dh, dw = depth_m.shape[:2]
+                        rh, rw = rgb.shape[:2]
+                        sx = dw / rw; sy = dh / rh
+                        u_d = int(u_rgb * sx); v_d = int(v_rgb * sy)
+                        d_intrin = {"fx": intrinsics["fx"]*sx, "fy": intrinsics["fy"]*sy,
+                                    "cx": intrinsics["cx"]*sx, "cy": intrinsics["cy"]*sy,
+                                    "width": dw, "height": dh}
+                        Xc, Yc, Zc = pixel_to_camera_3d(u_d, v_d, depth_m, d_intrin, sample_radius=2)
+                        q_full = np.asarray(robot.get_positions(), dtype=float)
+                        q_head, q_arm = kin.split_q(q_full)
+                        T_base_cam = kin.camera_in_base(q_head, q_arm)
+                        x, y, z = camera_to_base_3d((Xc, Yc, Zc), T_base_cam)
+                        z_ee = z + z_offset
+                        tgt = np.array([x, y, z_ee, 0, 0, 0, 1], dtype=float)
+                        q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
+                        print(f"[{mode.upper()}] base=({x:.3f},{y:.3f},{z:.3f}) z_ee={z_ee:.3f} cost={cost:.3f} it={it}")
+                        robot.set_positions(np.concatenate([q_hs, q_as]))
+                        head._send()
+                        _last_target = np.array([x, y, z_ee])
+                    except ValueError as e:
+                        print(f"        ❌ {e}")
+                    except Exception as e:
+                        print(f"        ❌ {e}")
 
             frames += 1
 
