@@ -85,33 +85,8 @@ def main():
         robot.set_positions(cmd); robot.wait_until_reached(cmd, active_joint_indices=range(2,8))
         q_head, q_arm = kin.split_q(cmd)
 
-    print("[Init] Rotate to target RPY ...")
-    T_cur = kin.ee_in_base(q_head, q_arm); p_cur = T_cur[:3,3]
-    R_cur = T_cur[:3,:3]
-    q0 = R.from_matrix(R_cur).as_quat()
-    q1 = R.from_matrix(R_des).as_quat()
-    angle = np.arccos(np.clip(np.abs(np.dot(q0, q1)), 0, 1)) * 2
-    n_rot = max(1, math.ceil(angle / 0.05))
-    for i in range(n_rot):
-        a = (i+1) / n_rot
-        # SLERP
-        omega = np.arccos(np.clip(np.dot(q0/np.linalg.norm(q0), q1/np.linalg.norm(q1)), -1, 1))
-        if abs(omega) < 1e-10:
-            qi = q0
-        else:
-            qi = (np.sin((1-a)*omega)*q0 + np.sin(a*omega)*q1) / np.sin(omega)
-        Ri = R.from_quat(qi).as_matrix()
-        T_rt = np.eye(4); T_rt[:3,:3] = Ri; T_rt[:3,3] = p_cur
-        q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_rt, q_head, q_arm)
-        if err < 0.05:
-            cmd = np.concatenate([q_hs, q_as]); cmd[0]=head_yaw; cmd[1]=head_pitch
-            robot.set_positions(cmd); time.sleep(0.02)
-            q_head, q_arm = kin.split_q(cmd)
-        else:
-            print(f"  ⚠ rot IK err={err:.3f} at step {i+1}/{n_rot}")
     rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
-    print(f"       RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
-    p0 = p_des.copy()  # ref for workspace clamping
+    print(f"       Target RPY: ({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
 
     # ── Mouse ─────────────────────────────────────────────────────────
     click_uv = None
