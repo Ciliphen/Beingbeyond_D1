@@ -147,16 +147,9 @@ def main():
             elif ch == 'k':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
             elif ch == 'j':    R_des = _ortho(_rot_z(+ORI_STEP) @ R_des); moved = True
             elif ch == 'l':    R_des = _ortho(_rot_z(-ORI_STEP) @ R_des); moved = True
-            elif ch == 'p':
-                from scipy.spatial.transform import Rotation as _R
-                T = kin.ee_in_base(q_head, q_arm)
-                px, py, pz = T[0,3], T[1,3], T[2,3]
-                rpy = _R.from_matrix(T[:3,:3]).as_euler('xyz', degrees=True)
-                print(f"\n  📐 Pose: xyz=({px:.4f}, {py:.4f}, {pz:.4f})")
-                print(f"           rpy=({rpy[0]:.1f}, {rpy[1]:.1f}, {rpy[2]:.1f})°\n")
             elif ch == 'h':
                 print("\n  W/S X±  A/D Y±  Q/E Z±  U/O roll±  I/K pitch±  J/L yaw±")
-                print("  SPACE hand+  B hand-  P=pose  R reset\n")
+                print("  SPACE hand+  B hand-  R reset\n")
             # ── Reset ─────────────────────────────────────────────────
             elif ch == 'r':
                 p_des = p0.copy()
@@ -187,7 +180,8 @@ def main():
                     else:
                         robot.set_positions(np.concatenate([q_hs, q_as]))
                         q_head, q_arm = q_hs, q_as
-                        print(f"  → ({p_des[0]:.3f}, {p_des[1]:.3f}, {p_des[2]:.3f})  err={err:.4f}")
+                        rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
+                        print(f"  → ({p_des[0]:.3f}, {p_des[1]:.3f}, {p_des[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  err={err:.4f}")
                 except Exception as e:
                     print(f"  ✗ IK: {e}")
 
