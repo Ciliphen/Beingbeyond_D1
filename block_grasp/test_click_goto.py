@@ -102,7 +102,7 @@ def main():
                 p_start = T_cur[:3, 3].copy()
                 p_target = np.array([wx, wy, Z_SAFE])
                 dist = np.linalg.norm(p_target - p_start)
-                n_steps = max(1, int(dist / 0.02))
+                n_steps = max(1, int(dist / 0.005))  # 5mm per step = smooth
 
                 for i in range(n_steps):
                     alpha = (i + 1) / n_steps
@@ -118,7 +118,7 @@ def main():
                         cmd = np.concatenate([q_hs, q_as])
                         cmd[0] = head_yaw; cmd[1] = head_pitch
                         robot.set_positions(cmd)
-                        robot.wait_until_reached(cmd, active_joint_indices=range(2, 8))
+                        time.sleep(0.02)  # brief pause to let serial send
                         q_head, q_arm = kin.split_q(cmd)
                         T_cur = kin.ee_in_base(q_head, q_arm)
                     except Exception as e:
