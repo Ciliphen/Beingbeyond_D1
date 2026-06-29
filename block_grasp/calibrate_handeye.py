@@ -288,18 +288,21 @@ def main():
 
             # ── Head movement (only when unlocked) ─────────────────────
             elif not head_locked:
-                if ch == 'w':      head_yaw_locked += ORI_STEP * 2
-                elif ch == 's':    head_yaw_locked -= ORI_STEP * 2
-                elif ch == 'a':    head_pitch_locked -= ORI_STEP
-                elif ch == 'd':    head_pitch_locked += ORI_STEP
+                HEAD_STEP = math.radians(10.0)  # 10° per press
+                if ch == 'w':      head_yaw_locked += HEAD_STEP
+                elif ch == 's':    head_yaw_locked -= HEAD_STEP
+                elif ch == 'a':    head_pitch_locked -= HEAD_STEP
+                elif ch == 'd':    head_pitch_locked += HEAD_STEP
                 else:
                     continue
-                # Send head-only command
+                head_yaw_locked = max(-math.radians(90), min(math.radians(90), head_yaw_locked))
+                head_pitch_locked = max(-math.radians(60), min(math.radians(60), head_pitch_locked))
                 q_cmd = np.asarray(robot.get_positions(), dtype=float)
                 q_cmd[0] = head_yaw_locked
                 q_cmd[1] = head_pitch_locked
                 robot.set_positions(q_cmd)
                 q_head, q_arm = kin.split_q(q_cmd)
+                print(f"  📷 Head: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
                 continue
 
             # ── EE teleop ─────────────────────────────────────────────
