@@ -13,6 +13,7 @@ Usage:
 import math, os, sys, time
 
 import cv2, numpy as np
+from scipy.spatial.transform import Rotation as R
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from camera.d1_camera_primitive import D1CameraPrimitive
@@ -61,7 +62,7 @@ def main():
     q_head, q_arm = kin.split_q(q_cur)
     T0 = kin.ee_in_base(q_head, q_arm)
     p_des = T0[:3, 3].copy()
-    R_des = T0[:3, :3].copy()
+    R_des = R.from_euler('xyz', [178, 61, -175], degrees=True).as_matrix()
     p0 = p_des.copy()  # ref for workspace clamping
 
     # ── Mouse ─────────────────────────────────────────────────────────
@@ -77,7 +78,8 @@ def main():
     cv2.resizeWindow(WINDOW, 1280, 720)
     cv2.setMouseCallback(WINDOW, _on_mouse)
 
-    print("\n  Left-click → move fingertip to that table position")
+    print("\n  Left-click → move EE to that table position")
+    print("  B → toggle hand open/close")
     print("  ESC → quit\n")
 
     try:
@@ -135,8 +137,16 @@ def main():
             cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})",
                         (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
             cv2.imshow(WINDOW, vis)
-            if cv2.waitKey(5) & 0xFF == 27:
+            key = cv2.waitKey(5) & 0xFF
+            if key == 27:
                 break
+            if key in (ord('b'), ord('B')):
+                hand_closed = not hand_closed
+                if hand_closed:
+                    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])
+                else:
+                    hand.set_joint_pos([0.0, 0.8, 0.0, 0.0, 0.0, 0.0])
+                print(f"  🖐 {'closed' if hand_closed else 'open'}")
 
     except KeyboardInterrupt:
         print("\n[Exit]")
