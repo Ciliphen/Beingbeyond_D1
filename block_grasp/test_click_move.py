@@ -127,6 +127,9 @@ def main():
 
             # ── Get aligned RGB + depth ────────────────────────────────
             rgb, depth_m = cam.rgbd(filtered=True)
+            if frames == 0:
+                print(f"[Info] RGB shape={rgb.shape}  depth shape={depth_m.shape}")
+                print(f"       intrinsics: {intrinsics['width']}x{intrinsics['height']}")
 
             # ── Handle click ───────────────────────────────────────────
             if _click_uv is not None:
