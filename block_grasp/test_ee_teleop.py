@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Simple EE teleop: palm faces down, WASD slides parallel to table.
+Simple EE teleop — palm faces down, WASD slides parallel to table.
 
-W/S → forward/back   A/D → left/right
-Q/E → up/down        ESC → quit
+Based on examples_中文/6_键盘遥操.py patterns:
+- Safe initial posture, workspace clamping, incremental IK
+- Terminal raw-mode input (no OpenCV window needed)
+
+W/S → X± (forward/back)   A/D → Y± (left/right)   Q/E → Z± (up/down)
+R → reset to start   ESC → quit
 
 Usage:
     conda activate bb_d1
@@ -11,93 +15,142 @@ Usage:
     python block_grasp/test_ee_teleop.py
 """
 import math
-import os
+import select
 import sys
+import termios
 import time
+import tty
 
-import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
+from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 
-STEP = 0.03   # 3cm per press
-Z_STEP = 0.02
+STEP = 0.01   # 1cm
+Z_STEP = 0.01
+MAX_OFFSET = np.array([0.3, 0.3, 0.2])
+IK_FAIL_THR = 0.05
+
+
+def _rot_x(a): c,s = math.cos(a), math.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]], dtype=float)
+def _rot_y(a): c,s = math.cos(a), math.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]], dtype=float)
+def _rot_z(a): c,s = math.cos(a), math.sin(a); return np.array([[c,-s,0],[s,c,0],[0,0,1]], dtype=float)
+def _ortho(M): U,_,Vt = np.linalg.svd(M); return U @ Vt
+
+
+def _getch(timeout=0.01):
+    dr, _, _ = select.select([sys.stdin], [], [], timeout)
+    return sys.stdin.read(1) if dr else None
+
+
+def _raw_mode():
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    return fd, old
+
+
+def _restore(fd, old):
+    if fd is not None:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
 
 def main():
-    urdf = get_default_urdf_path()
-    print("[Init] Robot ...")
-    robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
-    kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
+    print("\033[91m⚠ 急停按钮请保持触手可及！\033[0m\n")
 
-    # Start position: lift to safe height, then read actual EE
-    print("[Init] Lifting to safe height ...")
+    urdf = get_default_urdf_path()
+    kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
+    robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
+
+    # ── Safe initial posture ──────────────────────────────────────────
+    print("[Init] Moving to safe posture ...")
+    q_init_deg = [0, 0,  0, -60, 60,  0, 0, 0]
+    q_init = np.radians(q_init_deg)
+    robot.set_positions(q_init)
+    robot.wait_until_reached(q_init, active_joint_indices=range(8))
+    time.sleep(0.3)
+
+    # ── Read initial EE pose ──────────────────────────────────────────
     q = np.asarray(robot.get_positions(), dtype=float)
     q_head, q_arm = kin.split_q(q)
-    T = kin.ee_in_base(q_head, q_arm)
-    x, y, _ = T[0, 3], T[1, 3], T[2, 3]
-    z = 0.25  # safe start height (25cm)
-    R_down = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=float)
-    q_down = R.from_matrix(R_down).as_quat()
-    tgt = np.array([x, y, z, q_down[0], q_down[1], q_down[2], q_down[3]], dtype=float)
-    try:
-        q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
-        robot.set_positions(np.concatenate([q_hs, q_as]))
-        robot.wait_until_reached(np.concatenate([q_hs, q_as]), active_joint_indices=range(2, 8))
-        print(f"       EE start: ({x:.3f}, {y:.3f}, {z:.3f})")
-    except Exception as e:
-        print(f"       ⚠ lift failed: {e}, using current position")
-        z = T[2, 3]
+    T0 = kin.ee_in_base(q_head, q_arm)
+    p0 = T0[:3, 3].copy()
+    R0 = T0[:3, :3].copy()
 
-    print("\n" + "=" * 50)
-    print("  W/S forward/back   A/D left/right   Q/E up/down")
-    print(f"  Step: {STEP*100:.0f}cm  Z_step: {Z_STEP*100:.0f}cm  ESC quit")
-    print("=" * 50 + "\n")
+    p_des = p0.copy()
+    R_des = R0.copy()
+    print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})")
 
-    cv2.namedWindow("EE Teleop", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("EE Teleop", 400, 200)
-    blank = np.zeros((200, 400, 3), dtype=np.uint8)
+    # ── Help ──────────────────────────────────────────────────────────
+    print("\n" + "=" * 55)
+    print("  W/S X±  |  A/D Y±  |  Q/E Z±  |  R reset  |  ESC quit")
+    print(f"  Step={STEP*100:.0f}cm  max_offset=({MAX_OFFSET[0]:.0f},{MAX_OFFSET[1]:.0f},{MAX_OFFSET[2]:.0f})cm")
+    print("=" * 55 + "\n")
+
+    # ── Terminal raw mode ─────────────────────────────────────────────
+    fd, old = _raw_mode()
 
     try:
         while True:
-            # Show current EE position
-            q = np.asarray(robot.get_positions(), dtype=float)
-            q_head, q_arm = kin.split_q(q)
-            T = kin.ee_in_base(q_head, q_arm)
-            x, y, z = T[0, 3], T[1, 3], T[2, 3]
-
-            cv2.putText(blank, f"EE: ({x:.3f}, {y:.3f}, {z:.3f})", (20, 100),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.imshow("EE Teleop", blank)
-            key = cv2.waitKey(100) & 0xFF
+            ch = _getch(timeout=0.02)
+            if ch is None:
+                time.sleep(0.02)
+                continue
 
             moved = False
-            if key == 27:
+            # ── Translation ───────────────────────────────────────────
+            if ch == 'w':
+                p_des[0] += STEP; moved = True
+            elif ch == 's':
+                p_des[0] -= STEP; moved = True
+            elif ch == 'a':
+                p_des[1] += STEP; moved = True
+            elif ch == 'd':
+                p_des[1] -= STEP; moved = True
+            elif ch == 'q':
+                p_des[2] += Z_STEP; moved = True
+            elif ch == 'e':
+                p_des[2] -= Z_STEP; moved = True
+            # ── Reset ─────────────────────────────────────────────────
+            elif ch == 'r':
+                p_des = p0.copy()
+                R_des = R0.copy()
+                q_head, q_arm = kin.split_q(q_init)
+                print("  ↺ reset to start")
+            # ── Quit ──────────────────────────────────────────────────
+            elif ch == '\x1b':  # ESC
                 break
-            elif key in (ord('w'), ord('W')):   y -= STEP; moved = True
-            elif key in (ord('s'), ord('S')):   y += STEP; moved = True
-            elif key in (ord('a'), ord('A')):   x -= STEP; moved = True
-            elif key in (ord('d'), ord('D')):   x += STEP; moved = True
-            elif key in (ord('q'), ord('Q')):   z += Z_STEP; moved = True
-            elif key in (ord('e'), ord('E')):   z -= Z_STEP; moved = True
 
             if moved:
-                tgt = np.array([x, y, z, q_down[0], q_down[1], q_down[2], q_down[3]], dtype=float)
+                # Clamp workspace
+                offset = p_des - p0
+                offset = np.clip(offset, -MAX_OFFSET, MAX_OFFSET)
+                p_des = p0 + offset
+
+                # Build target transform
+                T_tgt = np.eye(4, dtype=float)
+                T_tgt[:3, :3] = R_des
+                T_tgt[:3, 3] = p_des
+
+                # IK
                 try:
-                    q_hs, q_as, cost, it = kin.ik_ee_quatpose_with_arm_only(tgt, q_head, q_arm)
-                    robot.set_positions(np.concatenate([q_hs, q_as]))
-                    print(f"  EE → ({x:.3f}, {y:.3f}, {z:.3f})  cost={cost:.3f} it={it}")
+                    q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
+                    if np.isnan(err) or err > IK_FAIL_THR:
+                        print(f"  ⚠ IK fail: err={err:.3f} (thr={IK_FAIL_THR})")
+                    else:
+                        robot.set_positions(np.concatenate([q_hs, q_as]))
+                        q_head, q_arm = q_hs, q_as
+                        print(f"  → ({p_des[0]:.3f}, {p_des[1]:.3f}, {p_des[2]:.3f})  err={err:.4f}")
                 except Exception as e:
-                    print(f"  IK failed: {e}")
+                    print(f"  ✗ IK: {e}")
 
     except KeyboardInterrupt:
         print("\n[Exit]")
     finally:
+        _restore(fd, old)
         robot.close()
-        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
