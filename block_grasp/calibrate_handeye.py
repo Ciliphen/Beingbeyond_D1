@@ -127,7 +127,9 @@ def main():
     robot.set_positions(q_init)
     robot.wait_until_reached(q_init, active_joint_indices=range(8))
     time.sleep(0.3)
-    hand.set_joint_pos([0.0, 0.8, 0.0, 0.0, 0.0, 0.0])  # open
+    hand_closed = True
+    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])  # closed for precision
+    print(f"       Hand: closed (fingertip for precise pointing)")
 
     # ── Read current state ─────────────────────────────────────────────
     q_cur = np.asarray(robot.get_positions(), dtype=float)
@@ -142,6 +144,7 @@ def main():
     head_pitch_locked = q_head[1]
     head_locked = False
 
+    last_q = np.asarray(robot.get_positions(), dtype=float)  # track to avoid drift
     print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})")
     print(f"       Head: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
 
@@ -157,14 +160,13 @@ def main():
     cv2.setMouseCallback(WINDOW, _on_mouse, click_state)
 
     print("\n" + "=" * 60)
-    print("  0. Move head to look at table, then press H to LOCK head")
+    print("  0. Lock head: 4/6 yaw  8/2 pitch  H to LOCK")
     print("  1. Click a reference point on the table")
-    print("  2. Move EE tip to that physical point (WASD/ZX + UO/IK/JL)")
-    print("  3. Press SPACE to record a pair")
-    print("  4. Repeat 6+ times across the table")
-    print("  5. Press C to compute & save")
-    print("  Keys: WASD ZX = position  UO/IK/JL = orientation")
-    print("        H = lock head  R = reset EE  Q = quit")
+    print("  2. Move EE tip there: WASD ZX pos  UO/IK/JL ori")
+    print("  3. SPACE to record a pair")
+    print("  4. Repeat 6+ times, then C to compute & save")
+    print("  EE: WASD=XY  ZX=Z  UO/IK/JL=RPY  R=reset")
+    print("  Head: 4/6 yaw  8/2 pitch  H=lock")
     print("=" * 60 + "\n")
 
     fd, old = _raw_mode()
@@ -218,6 +220,13 @@ def main():
                 break
 
             # ── Lock head ─────────────────────────────────────────────
+            elif ch == 'b':
+                hand_closed = not hand_closed
+                if hand_closed:
+                    hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])
+                else:
+                    hand.set_joint_pos([0.0, 0.8, 0.0, 0.0, 0.0, 0.0])
+                print(f"  🖐 hand {'closed' if hand_closed else 'open'}")
             elif ch == 'h':
                 if not head_locked:
                     head_yaw_locked = q_head[0]
@@ -286,26 +295,19 @@ def main():
                         print(f"  ⚠ Error too large ({errs.mean():.1f}mm). Add more pairs or redo.")
                     print(f"{'='*50}\n")
 
-            # ── Head movement (only when unlocked) ─────────────────────
-            elif not head_locked:
-                HEAD_STEP = math.radians(10.0)  # 10° per press
-                if ch == 'w':      head_yaw_locked += HEAD_STEP
-                elif ch == 's':    head_yaw_locked -= HEAD_STEP
-                elif ch == 'a':    head_pitch_locked -= HEAD_STEP
-                elif ch == 'd':    head_pitch_locked += HEAD_STEP
-                else:
-                    continue
-                head_yaw_locked = max(-math.radians(90), min(math.radians(90), head_yaw_locked))
-                head_pitch_locked = max(-math.radians(60), min(math.radians(60), head_pitch_locked))
-                q_cmd = np.asarray(robot.get_positions(), dtype=float)
-                q_cmd[0] = head_yaw_locked
-                q_cmd[1] = head_pitch_locked
-                robot.set_positions(q_cmd)
-                q_head, q_arm = kin.split_q(q_cmd)
-                print(f"  📷 Head: yaw={math.degrees(head_yaw_locked):.0f}°  pitch={math.degrees(head_pitch_locked):.0f}°")
-                continue
+            # ── Head movement (only when unlocked, 8/2 pitch  4/6 yaw) ─
+            elif not head_locked and ch in ('8', '2', '4', '6'):
+                if ch == '4':      head_yaw_locked += ORI_STEP * 2
+                elif ch == '6':    head_yaw_locked -= ORI_STEP * 2
+                elif ch == '8':    head_pitch_locked -= ORI_STEP
+                elif ch == '2':    head_pitch_locked += ORI_STEP
+                # Track the last commanded q so arm joints don't drift
+                last_q[0] = head_yaw_locked
+                last_q[1] = head_pitch_locked
+                robot.set_positions(last_q)
+                q_head, q_arm = kin.split_q(last_q)
 
-            # ── EE teleop ─────────────────────────────────────────────
+            # ── EE teleop (only when head locked) ─────────────────────
             elif ch == 'w':    p_des[0] += STEP; moved = True
             elif ch == 's':    p_des[0] -= STEP; moved = True
             elif ch == 'a':    p_des[1] += STEP; moved = True
@@ -334,7 +336,9 @@ def main():
                 try:
                     q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
                     if not np.isnan(err) and err <= IK_FAIL_THR:
-                        robot.set_positions(np.concatenate([q_hs, q_as]))
+                        cmd = np.concatenate([q_hs, q_as])
+                        robot.set_positions(cmd)
+                        last_q = cmd
                         q_head, q_arm = q_hs, q_as
                 except Exception:
                     pass
