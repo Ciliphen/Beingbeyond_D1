@@ -11,14 +11,16 @@ kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
 robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
 hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
 
-# Safe posture
-q_init = np.radians([0, 0, 0, -30, 30, 0, 0, 0])
-robot.set_positions(q_init)
-robot.wait_until_reached(q_init, active_joint_indices=range(8))
+# Just set head, keep arm where it is
+q_cur = np.asarray(robot.get_positions(), dtype=float)
+head_yaw = math.radians(-10)
+head_pitch = math.radians(35)
+q_cur[0] = head_yaw
+q_cur[1] = head_pitch
+robot.set_positions(q_cur)
+robot.wait_until_reached(q_cur, active_joint_indices=[0, 1])
 time.sleep(0.3)
 hand.set_joint_pos([0.64, 0.8, 0.54, 0.58, 0.0, 0.0])
-
-q_cur = np.asarray(robot.get_positions(), dtype=float)
 q_head, q_arm = kin.split_q(q_cur)
 T = kin.ee_in_base(q_head, q_arm)
 print(f"EE start: ({T[0,3]:.3f}, {T[1,3]:.3f}, {T[2,3]:.3f})")
