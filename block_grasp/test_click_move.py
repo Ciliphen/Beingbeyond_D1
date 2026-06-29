@@ -178,6 +178,8 @@ def main():
 
             # ── Keys ───────────────────────────────────────────────────
             key = cv2.waitKey(5) & 0xFF
+            if key != 255 and key != 0:
+                print(f"[Key] code={key} chr='{chr(key) if 32<=key<127 else '?'}'", end="  ")
             if key == 27 or key in (ord('q'), ord('Q')):
                 break
             if key in (ord('a'), ord('A')):   head.step(dyaw=+HEAD_YAW_STEP)
