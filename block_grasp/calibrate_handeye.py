@@ -166,7 +166,7 @@ def main():
     print("  2. Move EE tip there: WASD=XY  ZX=Z  UO/IK/JL=RPY")
     print("  3. SPACE to record a pair")
     print("  4. Repeat 6+ times, then C to compute & save")
-    print("  B=toggle hand  R=reset EE  Q=quit")
+    print("  B=toggle hand  R=reset EE  ESC=quit")
     print("=" * 60 + "\n")
 
     fd, old = _raw_mode()
@@ -216,7 +216,7 @@ def main():
 
             moved = False
 
-            if ch == 'q' or ch == '\x1b':
+            if ch == '\x1b':
                 break
 
             # ── Lock head ─────────────────────────────────────────────
