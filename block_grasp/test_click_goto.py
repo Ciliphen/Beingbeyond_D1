@@ -24,8 +24,7 @@ from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 CALIB = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
 IK_FAIL_THR = 0.10
 Z_SAFE = 0.25     # approach height
-Z_TOUCH = 0.05    # table height
-MAX_OFFSET = np.array([0.30, 0.30, 0.15])
+Z_TOUCH = 0.10    # table height (higher = easier to reach)
 
 
 def main():
@@ -102,14 +101,10 @@ def main():
                 wx, wy = float(w[0]), float(w[1])
                 print(f"\n[Click] ({u},{v}) → world=({wx:.3f}, {wy:.3f})")
 
-                # Clamp to workspace
-                p_des[0] = np.clip(wx, p0[0] - MAX_OFFSET[0], p0[0] + MAX_OFFSET[0])
-                p_des[1] = np.clip(wy, p0[1] - MAX_OFFSET[1], p0[1] + MAX_OFFSET[1])
-                if abs(wx - p_des[0]) > 0.01 or abs(wy - p_des[1]) > 0.01:
-                    print(f"  ⚠ Clamped: ({wx:.3f},{wy:.3f}) → ({p_des[0]:.3f},{p_des[1]:.3f})")
-
-                # Move: approach from above → touch → lift
+                # Move: approach from above → touch
                 for step_name, z_target in [("approach", Z_SAFE), ("touch", Z_TOUCH)]:
+                    p_des[0] = wx
+                    p_des[1] = wy
                     p_des[2] = z_target
                     T_tgt = np.eye(4)
                     T_tgt[:3, :3] = R_des
