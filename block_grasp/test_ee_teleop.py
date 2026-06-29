@@ -27,10 +27,11 @@ from scipy.spatial.transform import Rotation as R
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
+from beingbeyond_d1_sdk.dex_hand import DexHand
 
 STEP = 0.01   # 1cm
 Z_STEP = 0.01
-MAX_OFFSET = np.array([0.20, 0.20, 0.15])
+MAX_OFFSET = np.array([0.30, 0.30, 0.15])
 IK_FAIL_THR = 0.10  # m — relaxed for small workspace
 
 
@@ -38,6 +39,13 @@ def _rot_x(a): c,s = math.cos(a), math.sin(a); return np.array([[1,0,0],[0,c,-s]
 def _rot_y(a): c,s = math.cos(a), math.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]], dtype=float)
 def _rot_z(a): c,s = math.cos(a), math.sin(a); return np.array([[c,-s,0],[s,c,0],[0,0,1]], dtype=float)
 def _ortho(M): U,_,Vt = np.linalg.svd(M); return U @ Vt
+
+def _map_hand(t):
+    """Map t∈[0,1] to 6D joint positions. 0=open, 1=power-grasp close."""
+    A = [0.64, 0.8, 0.54, 0.58, 0.0, 0.0]   # closed
+    B = [0.0,  0.8, 0.0,  0.0,  0.0, 0.0]   # open
+    t = 0.0 if t < 0 else 1.0 if t > 1 else t
+    return [b + t * (a - b) for a, b in zip(A, B)]
 
 
 def _getch(timeout=0.01):
@@ -63,6 +71,8 @@ def main():
     urdf = get_default_urdf_path()
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
     robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
+    hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
+    hand_pos = 0.0  # 0=open, 1=close
 
     # ── Safe initial posture ──────────────────────────────────────────
     print("[Init] Moving to safe posture ...")
@@ -81,11 +91,12 @@ def main():
 
     p_des = p0.copy()
     R_des = R0.copy()
-    print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})")
+    hand.set_joint_pos(_map_hand(0.0))  # open at start
+    print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})  hand=open")
 
     # ── Help ──────────────────────────────────────────────────────────
     print("\n" + "=" * 55)
-    print("  W/S X±  |  A/D Y±  |  Q/E Z±  |  R reset  |  ESC quit")
+    print("  W/S X±  |  A/D Y±  |  Q/E Z±  |  R reset  |  SPACE hand  |  ESC quit")
     print(f"  Step={STEP*100:.0f}cm  max=({MAX_OFFSET[0]*100:.0f},{MAX_OFFSET[1]*100:.0f},{MAX_OFFSET[2]*100:.0f})cm  IK_thr={IK_FAIL_THR*100:.0f}cm")
     print("=" * 55 + "\n")
 
@@ -113,6 +124,11 @@ def main():
                 p_des[2] += Z_STEP; moved = True
             elif ch == 'e':
                 p_des[2] -= Z_STEP; moved = True
+            # ── Hand ──────────────────────────────────────────────────
+            elif ch == ' ':
+                hand_pos = 1.0 - hand_pos
+                hand.set_joint_pos(_map_hand(hand_pos))
+                print(f"  🖐 {'close' if hand_pos > 0.5 else 'open'}")
             # ── Reset ─────────────────────────────────────────────────
             elif ch == 'r':
                 p_des = p0.copy()
@@ -151,6 +167,8 @@ def main():
         print("\n[Exit]")
     finally:
         _restore(fd, old)
+        hand.open_hand()
+        hand.close_can()
         robot.close()
 
 
