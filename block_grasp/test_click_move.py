@@ -134,16 +134,17 @@ def main():
             # ── Handle click ───────────────────────────────────────────
             if _click_uv is not None:
                 u, v = _click_uv
-                _click_uv = None  # consumed by display (red crosshair below)
-
-                # Show click marker
-                cv2.drawMarker(vis, (u, v), (0, 255, 0),
-                               cv2.MARKER_CROSS, 20, 2)
                 _last_click_rgb = (u, v)
-                # Store for G/M key trigger below (handled later)
+                _click_uv = None
+                print(f"[Click] pixel=({u}, {v})")
 
             # ── Annotate ────────────────────────────────────────────────
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+            # Always show last click position (green crosshair)
+            if _last_click_rgb is not None:
+                cv2.drawMarker(vis, _last_click_rgb, (0, 255, 0),
+                               cv2.MARKER_CROSS, 20, 2)
 
             # Draw last target
             if _last_target is not None:
