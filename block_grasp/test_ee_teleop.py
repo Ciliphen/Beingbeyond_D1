@@ -30,7 +30,7 @@ from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 
 STEP = 0.01   # 1cm
 Z_STEP = 0.01
-MAX_OFFSET = np.array([0.10, 0.10, 0.10])
+MAX_OFFSET = np.array([0.20, 0.20, 0.15])
 IK_FAIL_THR = 0.10  # m — relaxed for small workspace
 
 
