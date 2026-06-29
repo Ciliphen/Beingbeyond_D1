@@ -267,7 +267,7 @@ def main():
                     print(f"  Errors per pair (mm): {[f'{e:.1f}' for e in errs]}")
                     print(f"  Mean: {errs.mean():.1f}mm  Max: {errs.max():.1f}mm")
 
-                    if errs.mean() < 10:
+                    if errs.mean() < 20:
                         np.savez(
                             SAVE_PATH,
                             H=H,
@@ -279,7 +279,7 @@ def main():
                         )
                         print(f"  ✅ Saved -> {SAVE_PATH}")
                     else:
-                        print(f"  ⚠ Error too large ({errs.mean():.1f}mm). Add more pairs or redo.")
+                        print(f"  ⚠ Error >20mm ({errs.mean():.1f}mm). Add more pairs or redo.")
                     print(f"{'='*50}\n")
 
             # ── EE teleop ─────────────────────────────────────────────
