@@ -162,13 +162,11 @@ def main():
     cv2.setMouseCallback(WINDOW, _on_mouse, click_state)
 
     print("\n" + "=" * 60)
-    print("  0. Lock head: 4/6 yaw  8/2 pitch  H to LOCK")
     print("  1. Click a reference point on the table")
-    print("  2. Move EE tip there: WASD ZX pos  UO/IK/JL ori")
+    print("  2. Move EE tip there: WASD=XY  ZX=Z  UO/IK/JL=RPY")
     print("  3. SPACE to record a pair")
     print("  4. Repeat 6+ times, then C to compute & save")
-    print("  EE: WASD=XY  ZX=Z  UO/IK/JL=RPY  R=reset")
-    print("  Head: 4/6 yaw  8/2 pitch  H=lock")
+    print("  B=toggle hand  R=reset EE  Q=quit")
     print("=" * 60 + "\n")
 
     fd, old = _raw_mode()
