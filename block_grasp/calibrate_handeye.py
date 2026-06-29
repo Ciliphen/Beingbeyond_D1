@@ -34,6 +34,7 @@ import tty
 
 import cv2
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from camera.d1_camera_primitive import D1CameraPrimitive
@@ -268,15 +269,20 @@ def main():
                     print(f"  Mean: {errs.mean():.1f}mm  Max: {errs.max():.1f}mm")
 
                     if errs.mean() < 20:
+                        # Save current EE orientation too
+                        T_cur = kin.ee_in_base(q_head, q_arm)
+                        rpy = Rotation.from_matrix(T_cur[:3,:3]).as_euler('xyz', degrees=True)
                         np.savez(
                             SAVE_PATH,
                             H=H,
                             head_yaw=HEAD_YAW,
                             head_pitch=HEAD_PITCH,
+                            rpy=rpy,
                             pixel_pts=np.array(pixel_pts),
                             world_pts=np.array(world_pts),
                             mean_err_mm=errs.mean(),
                         )
+                        print(f"  RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
                         print(f"  ✅ Saved -> {SAVE_PATH}")
                     else:
                         print(f"  ⚠ Error >20mm ({errs.mean():.1f}mm). Add more pairs or redo.")

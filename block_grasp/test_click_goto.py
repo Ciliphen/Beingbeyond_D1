@@ -72,7 +72,12 @@ def main():
     q_head, q_arm = kin.split_q(q_cur)
     T0 = kin.ee_in_base(q_head, q_arm)
     p_des = T0[:3, 3].copy()
-    R_des = R.from_euler('xyz', [178, 61, -175], degrees=True).as_matrix()
+    if "rpy" in data:
+        R_des = R.from_euler('xyz', data["rpy"], degrees=True).as_matrix()
+        print(f"  RPY=({data['rpy'][0]:.0f},{data['rpy'][1]:.0f},{data['rpy'][2]:.0f})")
+    else:
+        R_des = R.from_euler('xyz', [178, 61, -175], degrees=True).as_matrix()
+        print(f"  RPY default=(178,61,-175)")
 
     # ── Startup: lift to safe Z, then rotate to target RPY ────────────
     print("[Init] Lift to safe height ...")
