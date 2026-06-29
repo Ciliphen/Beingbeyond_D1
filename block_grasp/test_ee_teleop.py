@@ -147,9 +147,16 @@ def main():
             elif ch == 'k':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
             elif ch == 'j':    R_des = _ortho(_rot_z(+ORI_STEP) @ R_des); moved = True
             elif ch == 'l':    R_des = _ortho(_rot_z(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'p':
+                from scipy.spatial.transform import Rotation as _R
+                T = kin.ee_in_base(q_head, q_arm)
+                px, py, pz = T[0,3], T[1,3], T[2,3]
+                rpy = _R.from_matrix(T[:3,:3]).as_euler('xyz', degrees=True)
+                print(f"\n  📐 Pose: xyz=({px:.4f}, {py:.4f}, {pz:.4f})")
+                print(f"           rpy=({rpy[0]:.1f}, {rpy[1]:.1f}, {rpy[2]:.1f})°\n")
             elif ch == 'h':
                 print("\n  W/S X±  A/D Y±  Q/E Z±  U/O roll±  I/K pitch±  J/L yaw±")
-                print("  SPACE hand+  B hand-  R reset\n")
+                print("  SPACE hand+  B hand-  P=pose  R reset\n")
             # ── Reset ─────────────────────────────────────────────────
             elif ch == 'r':
                 p_des = p0.copy()
