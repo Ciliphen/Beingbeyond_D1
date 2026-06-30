@@ -82,6 +82,7 @@ def main():
     # ── IK state ──────────────────────────────────────────────────────
     q_cur = np.asarray(robot.get_positions(), dtype=float)
     q_head, q_arm = kin.split_q(q_cur)
+    q_arm0 = q_arm.copy()  # save for multi-restart IK
     T0 = kin.ee_in_base(q_head, q_arm)
     p_des = T0[:3, 3].copy()
     R_des = R.from_euler('xyz', [178, 61, -175], degrees=True).as_matrix()
@@ -212,8 +213,26 @@ def main():
                         print(f"  ✗ {e}")
                         break
                 else:
-                    rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
-                    print(f"  → ({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
+                    # Refinement: try IK from multiple starts, pick best
+                    T_final = np.eye(4)
+                    T_final[:3, :3] = kin.ee_in_base(q_head, q_arm)[:3,:3]
+                    T_final[:3, 3] = p_target
+                    best_err, best_cmd = 999, None
+                    # Try current arm config
+                    for trial_q_arm in [q_arm, q_arm0, q_arm + np.random.randn(6)*0.1,
+                                        q_arm + np.random.randn(6)*0.1]:
+                        try:
+                            q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_final, q_head, trial_q_arm)
+                            if err < best_err:
+                                best_err, best_cmd = err, np.concatenate([q_hs, q_as])
+                        except Exception:
+                            pass
+                    if best_cmd is not None:
+                        best_cmd[0] = head_yaw; best_cmd[1] = head_pitch
+                        robot.set_positions(best_cmd)
+                        time.sleep(0.05)
+                    rpy = R.from_matrix(T_final[:3,:3]).as_euler('xyz', degrees=True)
+                    print(f"  → ({p_target[0]:.3f},{p_target[1]:.3f},{p_target[2]:.3f})  err={best_err:.4f}")
 
             # ── Display ────────────────────────────────────────────────
             q_disp = np.asarray(robot.get_positions(), dtype=float)
