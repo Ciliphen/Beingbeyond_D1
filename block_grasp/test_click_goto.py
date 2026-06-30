@@ -195,7 +195,7 @@ def main():
                     alpha = (i + 1) / n_steps
                     interp = p_start + alpha * (p_target - p_start)
                     T_tgt = np.eye(4)
-                    T_tgt[:3, :3] = R_des
+                    T_tgt[:3, :3] = kin.ee_in_base(q_head, q_arm)[:3,:3]
                     T_tgt[:3, 3] = interp
                     try:
                         q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
