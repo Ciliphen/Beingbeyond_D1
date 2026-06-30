@@ -146,7 +146,7 @@ def main():
 
     # Lift to safe height + rotate to target RPY
     T_cur = kin.ee_in_base(q_head, q_arm)
-    p_tgt = T_cur[:3,3].copy(); p_tgt[2] = 0.25
+    p_tgt = T_cur[:3,3].copy(); p_tgt[2] = 0.30
     T_lift = np.eye(4); T_lift[:3,:3] = T_cur[:3,:3]; T_lift[:3,3] = p_tgt
     q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_lift, q_head, q_arm)
     if err < 0.05:
@@ -156,6 +156,7 @@ def main():
 
     q0 = _R.from_matrix(kin.ee_in_base(q_head, q_arm)[:3,:3]).as_quat()
     q1 = _R.from_matrix(R_des).as_quat()
+    if np.dot(q0, q1) < 0: q1 = -q1  # shortest path
     T_cur = kin.ee_in_base(q_head, q_arm); p_cur = T_cur[:3,3]
     omega = np.arccos(np.clip(np.dot(q0, q1), -1, 1))
     n = max(1, math.ceil(abs(omega)*2 / 0.05))
