@@ -112,7 +112,7 @@ def main():
     rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
     print(f"       RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
     p0 = p_des.copy()  # ref for workspace clamping
-    MAX_DXY = 0.12     # 12cm XY range from p0
+    MAX_DXY = 0.20     # 20cm XY range from p0
 
     # ── Mouse ─────────────────────────────────────────────────────────
     click_uv = None
