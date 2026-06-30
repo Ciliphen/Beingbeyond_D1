@@ -175,17 +175,8 @@ def main():
                         print(f"  ✗ {e}")
                         break
                 else:
-                    # Final precision step: go exactly to target
-                    T_final = np.eye(4); T_final[:3,:3] = R_des
-                    T_final[:3,3] = [wx, wy, Z_SAFE]
-                    q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_final, q_head, q_arm)
-                    if err < 0.05:
-                        cmd = np.concatenate([q_hs, q_as]); cmd[0]=head_yaw; cmd[1]=head_pitch
-                        robot.set_positions(cmd)
-                        robot.wait_until_reached(cmd, active_joint_indices=range(2,8))
-                        q_head, q_arm = kin.split_q(cmd)
                     rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
-                    print(f"  → ({wx:.3f},{wy:.3f},{Z_SAFE:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
+                    print(f"  → ({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
 
             # ── Display ────────────────────────────────────────────────
             q_disp = np.asarray(robot.get_positions(), dtype=float)
