@@ -258,9 +258,9 @@ def main():
                     print("  ⚠ Click a point first!")
                 else:
                     pixel_pts.append(last_click)
-                    world_pts.append((ex, ey))
+                    world_pts.append((ex, ey, ez))  # save z too
                     n = len(pixel_pts)
-                    print(f"  ✅ Pair #{n}: pixel=({last_click[0]},{last_click[1]}) → world=({ex:.3f},{ey:.3f})")
+                    print(f"  ✅ Pair #{n}: pixel=({last_click[0]},{last_click[1]}) → world=({ex:.3f},{ey:.3f},{ez:.3f})")
                     last_click = None
 
             # ── Compute ───────────────────────────────────────────────
@@ -269,42 +269,51 @@ def main():
                     print(f"  ⚠ Need >=4 pairs, have {len(pixel_pts)}")
                 else:
                     P = np.array(pixel_pts, dtype=float)
-                    W = np.array(world_pts, dtype=float)
+                    W = np.array(world_pts, dtype=float)  # (N, 3) with z
+                    Wxy = W[:, :2]
+
+                    # Homography: pixel → (x, y)
                     A = []
-                    for (u, v), (wx, wy) in zip(P, W):
+                    for (u, v), (wx, wy) in zip(P, Wxy):
                         A.append([u, v, 1, 0, 0, 0, -wx*u, -wx*v, -wx])
                         A.append([0, 0, 0, u, v, 1, -wy*u, -wy*v, -wy])
                     A = np.array(A, dtype=float)
                     _, _, Vt = np.linalg.svd(A)
-                    H = Vt[-1].reshape(3, 3)
-                    H /= H[2, 2]
+                    H = Vt[-1].reshape(3, 3); H /= H[2, 2]
 
                     ones = np.ones((P.shape[0], 1))
                     Ph = np.hstack([P, ones])
-                    Wp = (H @ Ph.T).T
-                    Wp /= Wp[:, 2:3]
-                    errs = np.linalg.norm(W - Wp[:, :2], axis=1) * 1000
+                    Wp = (H @ Ph.T).T; Wp /= Wp[:, 2:3]
+                    errs_xy = np.linalg.norm(Wxy - Wp[:, :2], axis=1) * 1000
+
+                    # Fit table plane: z = a*x + b*y + c
+                    Xz = np.column_stack([Wxy, np.ones(len(Wxy))])
+                    plane, _, _, _ = np.linalg.lstsq(Xz, W[:, 2], rcond=None)
+                    a, b, c = plane
+                    z_pred = a * Wxy[:, 0] + b * Wxy[:, 1] + c
+                    errs_z = np.abs(W[:, 2] - z_pred) * 1000
 
                     print(f"\n{'='*50}")
                     print(f"  Homography H (3x3):")
                     for row in H:
                         print(f"    {row}")
-                    print(f"  Errors per pair (mm): {[f'{e:.1f}' for e in errs]}")
-                    print(f"  Mean: {errs.mean():.1f}mm  Max: {errs.max():.1f}mm")
+                    print(f"  Table plane: z = {a:.4f}*x + {b:.4f}*y + {c:.4f}")
+                    print(f"  XY errors (mm): {[f'{e:.1f}' for e in errs_xy]}")
+                    print(f"  Z  errors (mm): {[f'{e:.1f}' for e in errs_z]}")
+                    print(f"  Mean XY: {errs_xy.mean():.1f}mm  Mean Z: {errs_z.mean():.1f}mm")
 
-                    if errs.mean() < 20:
+                    if errs_xy.mean() < 20:
                         np.savez(
                             SAVE_PATH,
-                            H=H,
-                            head_yaw=HEAD_YAW,
-                            head_pitch=HEAD_PITCH,
+                            H=H, plane=plane,
+                            head_yaw=HEAD_YAW, head_pitch=HEAD_PITCH,
                             pixel_pts=np.array(pixel_pts),
                             world_pts=np.array(world_pts),
-                            mean_err_mm=errs.mean(),
+                            mean_err_mm=errs_xy.mean(),
                         )
                         print(f"  ✅ Saved -> {SAVE_PATH}")
                     else:
-                        print(f"  ⚠ Error >20mm ({errs.mean():.1f}mm). Add more pairs or redo.")
+                        print(f"  ⚠ Error >20mm ({errs_xy.mean():.1f}mm). Add more pairs or redo.")
                     print(f"{'='*50}\n")
 
             # ── EE teleop ─────────────────────────────────────────────

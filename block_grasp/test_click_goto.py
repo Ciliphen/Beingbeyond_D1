@@ -37,11 +37,17 @@ Z_TOUCH = 0.18    # height above table (arm can't reach below ~0.15)
 
 def main():
     # ── Load calibration ──────────────────────────────────────────────
-    data = np.load(CALIB)
+    data = np.load(CALIB, allow_pickle=True)
     H = data["H"]
     head_yaw = float(data["head_yaw"])
     head_pitch = float(data["head_pitch"])
+    # Load plane if available (new calib format)
+    if "plane" in data:
+        a, b, c = data["plane"]
+    else:
+        a, b, c = 0, 0, Z_SAFE  # fallback: flat plane at Z_SAFE
     print(f"Calib: head yaw={math.degrees(head_yaw):.0f}° pitch={math.degrees(head_pitch):.0f}°")
+    print(f"       plane: z={a:.4f}x + {b:.4f}y + {c:.4f}")
 
     urdf = get_default_urdf_path()
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
@@ -151,10 +157,13 @@ def main():
                 # Move: interpolate position to target (RPY already set at startup)
                 T_cur = kin.ee_in_base(q_head, q_arm)
                 p_start = T_cur[:3, 3].copy()
+                # Compute Z from table plane: z = a*x + b*y + c
+                z_table = a * wx + b * wy + c
+                z_target = z_table + 0.10  # 10cm above table surface
                 # Clamp XY to workspace
                 wx = np.clip(wx, p0[0]-MAX_DXY, p0[0]+MAX_DXY)
                 wy = np.clip(wy, p0[1]-MAX_DXY, p0[1]+MAX_DXY)
-                p_target = np.array([wx, wy, Z_SAFE])
+                p_target = np.array([wx, wy, z_target])
                 dist = np.linalg.norm(p_target - p_start)
                 n_steps = max(1, int(dist / 0.005))
 
