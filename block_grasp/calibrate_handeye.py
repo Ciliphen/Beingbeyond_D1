@@ -47,7 +47,7 @@ SAVE_PATH = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
 STEP = 0.01
 Z_STEP = 0.01
 ORI_STEP = math.radians(5.0)
-MAX_OFFSET = np.array([0.30, 0.30, 0.15])
+MAX_OFFSET = np.array([0.50, 0.50, 0.15])
 IK_FAIL_THR = 0.10
 
 
