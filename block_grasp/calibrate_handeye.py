@@ -209,7 +209,7 @@ def main():
             # Draw markers
             if last_click is not None:
                 cv2.drawMarker(vis, last_click, (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
-            for i, ((u, v), (wx, wy)) in enumerate(zip(pixel_pts, world_pts)):
+            for i, ((u, v), (wx, wy, _wz)) in enumerate(zip(pixel_pts, world_pts)):
                 cv2.circle(vis, (int(u), int(v)), 6, (255, 100, 0), -1)
                 cv2.putText(vis, f"#{i+1}", (int(u)+10, int(v)-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1)
