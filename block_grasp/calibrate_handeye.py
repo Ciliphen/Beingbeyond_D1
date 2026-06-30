@@ -229,13 +229,13 @@ def main():
             cv2.putText(vis, f"Head: yaw={math.degrees(qh_disp[0]):.0f} pitch={math.degrees(qh_disp[1]):.0f}",
                         (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
 
+            cv2.imshow(WINDOW, vis)
             # ── Keyboard (captured via OpenCV window — no focus switch needed) ──
             raw = cv2.waitKey(5)
             if raw == -1:
                 continue
             key = raw & 0xFF
             ch = chr(key) if 32 <= key < 127 else None
-            cv2.imshow(WINDOW, vis)
 
             moved = False
 
