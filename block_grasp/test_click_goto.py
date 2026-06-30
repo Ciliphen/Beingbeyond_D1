@@ -112,6 +112,7 @@ def main():
     rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
     print(f"       RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
     p0 = p_des.copy()  # ref for workspace clamping
+    MAX_DXY = 0.12     # 12cm XY range from p0
 
     # ── Mouse ─────────────────────────────────────────────────────────
     click_uv = None
@@ -150,6 +151,9 @@ def main():
                 # Move: interpolate position to target (RPY already set at startup)
                 T_cur = kin.ee_in_base(q_head, q_arm)
                 p_start = T_cur[:3, 3].copy()
+                # Clamp XY to workspace
+                wx = np.clip(wx, p0[0]-MAX_DXY, p0[0]+MAX_DXY)
+                wy = np.clip(wy, p0[1]-MAX_DXY, p0[1]+MAX_DXY)
                 p_target = np.array([wx, wy, Z_SAFE])
                 dist = np.linalg.norm(p_target - p_start)
                 n_steps = max(1, int(dist / 0.005))
