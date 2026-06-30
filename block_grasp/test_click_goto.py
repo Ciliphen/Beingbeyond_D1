@@ -59,7 +59,12 @@ def main():
     print("[Init] Camera ...")
     cam = D1CameraPrimitive(width=1280, height=720, fps=30)
 
-    # ── Set head to calib position, keep arm where it is ──────────────
+    # ── Safe posture first, then set head ─────────────────────────────
+    print("[Init] Safe posture ...")
+    q_init = np.radians([0, 0, 0, -60, 60, 0, 0, 0])
+    robot.set_positions(q_init)
+    robot.wait_until_reached(q_init, active_joint_indices=range(8))
+    time.sleep(0.3)
     print("[Init] Setting head ...")
     q = np.asarray(robot.get_positions(), dtype=float)
     q[0] = head_yaw
@@ -96,12 +101,15 @@ def main():
     R_cur = T_cur[:3,:3]
     q0 = R.from_matrix(R_cur).as_quat()
     q1 = R.from_matrix(R_des).as_quat()
-    angle = np.arccos(np.clip(np.abs(np.dot(q0, q1)), 0, 1)) * 2
+    # Ensure shortest path (quaternion double-cover)
+    if np.dot(q0, q1) < 0:
+        q1 = -q1
+    omega = np.arccos(np.clip(np.dot(q0, q1), -1, 1))
+    angle = omega * 2
     n_rot = max(1, math.ceil(angle / 0.05))
     for i in range(n_rot):
         a = (i+1) / n_rot
         # SLERP
-        omega = np.arccos(np.clip(np.dot(q0/np.linalg.norm(q0), q1/np.linalg.norm(q1)), -1, 1))
         if abs(omega) < 1e-10:
             qi = q0
         else:
