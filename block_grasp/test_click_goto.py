@@ -21,6 +21,8 @@ from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
+from block_grasp.ik_jacobian import jacobian_ik, jacobian_ik_multi_restart
+from block_grasp.ik_scipy import scipy_ik_multi_restart
 
 CALIB = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
 
@@ -192,17 +194,24 @@ def main():
                 dist = np.linalg.norm(p_target - p_start)
                 n_steps = max(1, int(dist / 0.005))
 
+                # ── Interpolated movement with Jacobian IK ──────────────
+                R_cur = kin.ee_in_base(q_head, q_arm)[:3, :3]
+                ik_ok = True
                 for i in range(n_steps):
                     alpha = (i + 1) / n_steps
                     interp = p_start + alpha * (p_target - p_start)
                     T_tgt = np.eye(4)
-                    T_tgt[:3, :3] = kin.ee_in_base(q_head, q_arm)[:3,:3]
+                    T_tgt[:3, :3] = R_cur
                     T_tgt[:3, 3] = interp
                     try:
-                        q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
-                        if np.isnan(err) or err > 0.10:
+                        # Single-restart Jacobian IK (small step, fast)
+                        q_hs, q_as, err, it = jacobian_ik(
+                            kin, T_tgt, q_head, q_arm,
+                            z_weight=3.0, max_iters=200, tol_pos=1e-4)
+                        if np.isnan(err) or err > 0.02:
                             if i == 0:
-                                print(f"  ⚠ IK fail: err={err:.3f}")
+                                print(f"  ⚠ IK fail at step 0: err={err:.3f}")
+                            ik_ok = False
                             break
                         cmd = np.concatenate([q_hs, q_as])
                         cmd[0] = head_yaw; cmd[1] = head_pitch
@@ -210,27 +219,28 @@ def main():
                         time.sleep(0.02)
                         q_head, q_arm = kin.split_q(cmd)
                     except Exception as e:
-                        print(f"  ✗ {e}")
+                        print(f"  ✗ IK step {i}: {e}")
+                        ik_ok = False
                         break
-                else:
-                    # Refinement: try IK from multiple starts, pick best
+
+                if ik_ok:
+                    # ── Final refinement: multi-restart SLSQP IK (roboarm-style) ──
                     T_final = np.eye(4)
-                    T_final[:3, :3] = kin.ee_in_base(q_head, q_arm)[:3,:3]
+                    T_final[:3, :3] = R_cur
                     T_final[:3, 3] = p_target
-                    best_err, best_cmd = 999, None
-                    # Try current arm config
-                    for trial_q_arm in [q_arm, q_arm0, q_arm + np.random.randn(6)*0.1,
-                                        q_arm + np.random.randn(6)*0.1]:
-                        try:
-                            q_hs, q_as, err, _ = kin.ik_T_ee_with_arm_only(T_final, q_head, trial_q_arm)
-                            if err < best_err:
-                                best_err, best_cmd = err, np.concatenate([q_hs, q_as])
-                        except Exception:
-                            pass
-                    if best_cmd is not None:
-                        best_cmd[0] = head_yaw; best_cmd[1] = head_pitch
-                        robot.set_positions(best_cmd)
+                    try:
+                        q_hs, q_as, best_err, _ = scipy_ik_multi_restart(
+                            kin, T_final, q_head, q_arm,
+                            n_restarts=4, z_weight=3.0,
+                            pos_tol=0.005, tilt_tol_deg=5, yaw_tol_deg=10)
+                        cmd = np.concatenate([q_hs, q_as])
+                        cmd[0] = head_yaw; cmd[1] = head_pitch
+                        robot.set_positions(cmd)
                         time.sleep(0.05)
+                        q_head, q_arm = kin.split_q(cmd)
+                    except Exception as e:
+                        print(f"  ✗ Refine IK: {e}")
+                        best_err = 999
                     rpy = R.from_matrix(T_final[:3,:3]).as_euler('xyz', degrees=True)
                     print(f"  → ({p_target[0]:.3f},{p_target[1]:.3f},{p_target[2]:.3f})  err={best_err:.4f}")
 

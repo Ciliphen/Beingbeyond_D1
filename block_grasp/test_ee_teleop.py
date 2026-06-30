@@ -14,9 +14,8 @@ Usage:
     cd ~/Beingbeyond_D1
     python block_grasp/test_ee_teleop.py
 """
-import math
+import math, os, sys
 import select
-import sys
 import termios
 import time
 import tty
@@ -24,16 +23,18 @@ import tty
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
+from block_grasp.ik_scipy import scipy_ik
 
 STEP = 0.01   # 1cm
 Z_STEP = 0.01
 ORI_STEP = math.radians(5.0)  # 5°
 MAX_OFFSET = np.array([0.30, 0.30, 0.15])
-IK_FAIL_THR = 0.10  # m — relaxed for small workspace
+IK_FAIL_THR = 0.02  # m — Jacobian IK converges to ~0.0001, 2cm is generous
 
 
 def _rot_x(a): c,s = math.cos(a), math.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]], dtype=float)
@@ -92,8 +93,6 @@ def main():
     p0 = T0[:3, 3].copy()
     R0 = T0[:3, :3].copy()
 
-    p_des = p0.copy()
-    R_des = R0.copy()
     hand.set_joint_pos(_map_hand(0.0))  # open at start
     print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})  hand=open")
 
@@ -115,20 +114,27 @@ def main():
                 time.sleep(0.02)
                 continue
 
+            # ── Read actual current EE pose (every cycle, no virtual drift) ──
+            T_cur = kin.ee_in_base(q_head, q_arm)
+            p_cur = T_cur[:3, 3].copy()
+            R_cur = T_cur[:3, :3].copy()
+            delta_pos = np.zeros(3)
+            delta_R = np.eye(3)
             moved = False
+
             # ── Translation ───────────────────────────────────────────
             if ch == 'w':
-                p_des[0] += STEP; moved = True
+                delta_pos[0] += STEP; moved = True
             elif ch == 's':
-                p_des[0] -= STEP; moved = True
+                delta_pos[0] -= STEP; moved = True
             elif ch == 'a':
-                p_des[1] += STEP; moved = True
+                delta_pos[1] += STEP; moved = True
             elif ch == 'd':
-                p_des[1] -= STEP; moved = True
+                delta_pos[1] -= STEP; moved = True
             elif ch == 'q':
-                p_des[2] += Z_STEP; moved = True
+                delta_pos[2] += Z_STEP; moved = True
             elif ch == 'e':
-                p_des[2] -= Z_STEP; moved = True
+                delta_pos[2] -= Z_STEP; moved = True
             # ── Hand (SPACE = next, B = prev) ─────────────────────────
             elif ch == ' ':
                 hand_level = min(hand_level + 1, len(HAND_LEVELS) - 1)
@@ -141,47 +147,58 @@ def main():
                 hand.set_joint_pos(_map_hand(pos))
                 print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
             # ── Orientation ──────────────────────────────────────────
-            elif ch == 'u':    R_des = _ortho(_rot_x(+ORI_STEP) @ R_des); moved = True
-            elif ch == 'o':    R_des = _ortho(_rot_x(-ORI_STEP) @ R_des); moved = True
-            elif ch == 'i':    R_des = _ortho(_rot_y(-ORI_STEP) @ R_des); moved = True
-            elif ch == 'k':    R_des = _ortho(_rot_y(+ORI_STEP) @ R_des); moved = True
-            elif ch == 'j':    R_des = _ortho(_rot_z(+ORI_STEP) @ R_des); moved = True
-            elif ch == 'l':    R_des = _ortho(_rot_z(-ORI_STEP) @ R_des); moved = True
+            elif ch == 'u':    delta_R = _rot_x(+ORI_STEP); moved = True
+            elif ch == 'o':    delta_R = _rot_x(-ORI_STEP); moved = True
+            elif ch == 'i':    delta_R = _rot_y(-ORI_STEP); moved = True
+            elif ch == 'k':    delta_R = _rot_y(+ORI_STEP); moved = True
+            elif ch == 'j':    delta_R = _rot_z(+ORI_STEP); moved = True
+            elif ch == 'l':    delta_R = _rot_z(-ORI_STEP); moved = True
             elif ch == 'h':
                 print("\n  W/S X±  A/D Y±  Q/E Z±  U/O roll±  I/K pitch±  J/L yaw±")
                 print("  SPACE hand+  B hand-  R reset\n")
             # ── Reset ─────────────────────────────────────────────────
             elif ch == 'r':
-                p_des = p0.copy()
-                R_des = R0.copy()
                 q_head, q_arm = kin.split_q(q_init)
-                moved = True
+                robot.set_positions(q_init)
+                robot.wait_until_reached(q_init, active_joint_indices=range(8))
+                p_cur = p0.copy(); R_cur = R0.copy()
                 print("  ↺ reset to start")
             # ── Quit ──────────────────────────────────────────────────
             elif ch == '\x1b':  # ESC
                 break
 
             if moved:
-                # Clamp workspace
-                offset = p_des - p0
+                # Apply delta to current actual pose
+                p_new = p_cur + delta_pos
+                R_new = _ortho(delta_R @ R_cur)
+
+                # Clamp workspace relative to origin p0
+                offset = p_new - p0
                 offset = np.clip(offset, -MAX_OFFSET, MAX_OFFSET)
-                p_des = p0 + offset
+                p_new = p0 + offset
 
                 # Build target transform
                 T_tgt = np.eye(4, dtype=float)
-                T_tgt[:3, :3] = R_des
-                T_tgt[:3, 3] = p_des
+                T_tgt[:3, :3] = R_new
+                T_tgt[:3, 3] = p_new
 
-                # IK
+                # IK (SLSQP, roboarm-style: tilt/yaw decomposition)
                 try:
-                    q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
+                    q_hs, q_as, err, it = scipy_ik(
+                        kin, T_tgt, q_head, q_arm,
+                        z_weight=2.0, pos_tol=0.005,
+                        tilt_tol_deg=5, yaw_tol_deg=10, max_iters=200)
                     if np.isnan(err) or err > IK_FAIL_THR:
-                        print(f"  ⚠ IK fail: err={err:.3f} (thr={IK_FAIL_THR})")
+                        print(f"  ⚠ IK fail: err={err:.3f}  → not moved")
                     else:
                         robot.set_positions(np.concatenate([q_hs, q_as]))
                         q_head, q_arm = q_hs, q_as
-                        rpy = R.from_matrix(R_des).as_euler('xyz', degrees=True)
-                        print(f"  → ({p_des[0]:.3f}, {p_des[1]:.3f}, {p_des[2]:.3f})  rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  err={err:.4f}")
+                        # Read back actual achieved pose
+                        T_ach = kin.ee_in_base(q_head, q_arm)
+                        p_ach = T_ach[:3, 3]
+                        rpy = R.from_matrix(T_ach[:3,:3]).as_euler('xyz', degrees=True)
+                        print(f"  → ({p_ach[0]:.3f}, {p_ach[1]:.3f}, {p_ach[2]:.3f})  "
+                              f"rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  err={err:.4f}")
                 except Exception as e:
                     print(f"  ✗ IK: {e}")
 

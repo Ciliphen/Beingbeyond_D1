@@ -330,9 +330,13 @@ def main() -> int:
             print("进入键盘遥操作循环，按下 'q' 退出。")
 
             dt = 0.01
+            print_interval = 0.3  # 每隔 0.3s 输出一次 EE 位姿
+            last_print_time = 0.0
+            t_start = time.time()
 
             try:
                 while True:
+                    t_now = time.time() - t_start
                     if use_raw:
                         ch = _getch_nonblocking(timeout=dt)
                     else:
@@ -345,7 +349,8 @@ def main() -> int:
                             break
                         ch = line[0] if line else None
 
-                    if ch is not None:
+                    key_pressed = ch is not None
+                    if key_pressed:
                         res = controller.handle_key(
                             ch,
                             q_head_zero=q_head,
@@ -353,7 +358,6 @@ def main() -> int:
                         )
                         if res == "quit":
                             break
-
 
                     target_T = controller.build_target_T()
                     q_head_new, q_arm_new, err, iters, ok = solve_ik_safe(
@@ -368,22 +372,43 @@ def main() -> int:
 
                     controller.set_q(q_head_new, q_arm_new)
 
-
                     hand_pos = float(controller.toggle_flag)
                     hand_q_norm = map_hand(hand_pos)  # 6 维
-
 
                     q_headarm_cmd = np.concatenate(
                         [controller.q_head, controller.q_arm]
                     )
                     q_cmd = list(q_headarm_cmd) + hand_q_norm
 
-
                     robot.set_q(q_cmd)
+
+                    # ── 输出当前 EE 位姿 ────────────────────────────
+                    if key_pressed or (t_now - last_print_time) >= print_interval:
+                        last_print_time = t_now
+                        T_cur = kin.ee_in_base(controller.q_head, controller.q_arm)
+                        p_cur = T_cur[:3, 3]
+                        rpy = np.degrees(
+                            np.array(
+                                [
+                                    math.atan2(T_cur[2, 1], T_cur[2, 2]),
+                                    math.asin(-T_cur[2, 0]),
+                                    math.atan2(T_cur[1, 0], T_cur[0, 0]),
+                                ]
+                            )
+                        )
+                        marker = "←" if key_pressed else " "
+                        print(
+                            f"\r  [{marker}] EE: ({p_cur[0]:.3f}, {p_cur[1]:.3f}, {p_cur[2]:.3f}) m  "
+                            f"RPY: ({rpy[0]:.0f}°, {rpy[1]:.0f}°, {rpy[2]:.0f}°)  "
+                            f"err={err:.4f}  hand={controller.toggle_flag:.0f}   ",
+                            end="",
+                            flush=True,
+                        )
 
                     time.sleep(dt)
 
             finally:
+                print()  # 换行，结束 \r 状态行
                 _restore_terminal(fd, old_settings)
                 print("遥操作循环结束，终端设置已恢复。")
 
