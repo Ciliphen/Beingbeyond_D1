@@ -162,7 +162,7 @@ def main():
                     T_tgt[:3, 3] = interp
                     try:
                         q_hs, q_as, err, it = kin.ik_T_ee_with_arm_only(T_tgt, q_head, q_arm)
-                        if np.isnan(err) or err > 0.05:
+                        if np.isnan(err) or err > 0.10:
                             if i == 0:
                                 print(f"  ⚠ IK fail: err={err:.3f}")
                             break
