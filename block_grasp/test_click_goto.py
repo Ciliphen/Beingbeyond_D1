@@ -31,7 +31,7 @@ def _map_hand(t):
     t = 0.0 if t < 0 else 1.0 if t > 1 else t
     return [b + t * (a - b) for a, b in zip(A, B)]
 IK_FAIL_THR = 0.10
-Z_SAFE = 0.20     # approach height
+Z_SAFE = 0.25     # approach height
 Z_TOUCH = 0.18    # height above table (arm can't reach below ~0.15)
 
 
