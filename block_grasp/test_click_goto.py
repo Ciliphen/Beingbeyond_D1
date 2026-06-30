@@ -41,13 +41,17 @@ def main():
     H = data["H"]
     head_yaw = float(data["head_yaw"])
     head_pitch = float(data["head_pitch"])
-    # Load plane if available (new calib format)
+    # Use median Z from calibration as fixed table reference
     if "plane" in data:
-        a, b, c = data["plane"]
+        W = data["world_pts"]
+        z_ref = float(np.median(W[:, 2]))  # median EE Z when touching table
+    elif "world_pts" in data:
+        W = data["world_pts"]
+        z_ref = float(np.median(W[:, 2]))
     else:
-        a, b, c = 0, 0, Z_SAFE  # fallback: flat plane at Z_SAFE
+        z_ref = Z_SAFE
     print(f"Calib: head yaw={math.degrees(head_yaw):.0f}° pitch={math.degrees(head_pitch):.0f}°")
-    print(f"       plane: z={a:.4f}x + {b:.4f}y + {c:.4f}")
+    print(f"       z_ref={z_ref:.3f} (median of calib points)")
 
     urdf = get_default_urdf_path()
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
@@ -170,8 +174,7 @@ def main():
                 T_cur = kin.ee_in_base(q_head, q_arm)
                 p_start = T_cur[:3, 3].copy()
                 # Compute Z from table plane: z = a*x + b*y + c
-                z_table = a * wx + b * wy + c
-                z_target = z_table + z_offset
+                z_target = z_ref + z_offset
                 # Clamp XY to workspace
                 wx = np.clip(wx, p0[0]-MAX_DXY, p0[0]+MAX_DXY)
                 wy = np.clip(wy, p0[1]-MAX_DXY, p0[1]+MAX_DXY)
