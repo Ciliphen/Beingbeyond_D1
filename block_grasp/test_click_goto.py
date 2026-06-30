@@ -133,7 +133,10 @@ def main():
     cv2.resizeWindow(WINDOW, 1280, 720)
     cv2.setMouseCallback(WINDOW, _on_mouse)
 
-    print("\n  Left-click → move EE to that table position")
+    z_offset = 0.10  # height above table (adjustable with Z/X)
+
+    print(f"\n  Left-click → move to table + {z_offset*100:.0f}cm")
+    print("  Z/X → raise/lower target height")
     print("  SPACE/B → hand tighter/looser")
     print("  ESC → quit\n")
 
@@ -159,7 +162,7 @@ def main():
                 p_start = T_cur[:3, 3].copy()
                 # Compute Z from table plane: z = a*x + b*y + c
                 z_table = a * wx + b * wy + c
-                z_target = z_table + 0.10  # 10cm above table surface
+                z_target = z_table + z_offset
                 # Clamp XY to workspace
                 wx = np.clip(wx, p0[0]-MAX_DXY, p0[0]+MAX_DXY)
                 wy = np.clip(wy, p0[1]-MAX_DXY, p0[1]+MAX_DXY)
@@ -212,6 +215,12 @@ def main():
                 pos = HAND_LEVELS[hand_level]
                 hand.set_joint_pos(_map_hand(pos))
                 print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
+            elif key in (ord('z'), ord('Z')):
+                z_offset = min(z_offset + 0.01, 0.30)
+                print(f"  📏 height above table: {z_offset*100:.0f}cm")
+            elif key in (ord('x'), ord('X')):
+                z_offset = max(z_offset - 0.01, 0.01)
+                print(f"  📏 height above table: {z_offset*100:.0f}cm")
 
     except KeyboardInterrupt:
         print("\n[Exit]")
