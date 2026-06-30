@@ -41,17 +41,14 @@ def main():
     H = data["H"]
     head_yaw = float(data["head_yaw"])
     head_pitch = float(data["head_pitch"])
-    # Use median Z from calibration as fixed table reference
-    if "plane" in data:
-        W = data["world_pts"]
-        z_ref = float(np.median(W[:, 2]))  # median EE Z when touching table
-    elif "world_pts" in data:
-        W = data["world_pts"]
+    # Use calibration points for Z interpolation
+    if "world_pts" in data:
+        W = data["world_pts"]          # (N, 3) — x,y,z when touching table
         z_ref = float(np.median(W[:, 2]))
     else:
-        z_ref = Z_SAFE
+        W = None; z_ref = Z_SAFE
     print(f"Calib: head yaw={math.degrees(head_yaw):.0f}° pitch={math.degrees(head_pitch):.0f}°")
-    print(f"       z_ref={z_ref:.3f} (median of calib points)")
+    print(f"       z_ref={z_ref:.3f} ({len(W)} calib pts)" if W is not None else f"       z_ref={z_ref:.3f}")
 
     urdf = get_default_urdf_path()
     kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf))
@@ -174,7 +171,19 @@ def main():
                 T_cur = kin.ee_in_base(q_head, q_arm)
                 p_start = T_cur[:3, 3].copy()
                 # Compute Z from table plane: z = a*x + b*y + c
-                z_target = z_ref + z_offset
+                # Interpolate Z from 3 nearest calibration points
+                if W is not None and len(W) >= 3:
+                    dists = np.sqrt((W[:,0] - wx)**2 + (W[:,1] - wy)**2)
+                    idx = np.argsort(dists)[:3]
+                    if dists[idx[0]] < 1e-6:
+                        z_table = W[idx[0], 2]
+                    else:
+                        wgt = 1.0 / (dists[idx] + 0.001)
+                        wgt /= wgt.sum()
+                        z_table = float(np.dot(wgt, W[idx, 2]))
+                else:
+                    z_table = z_ref
+                z_target = z_table + z_offset
                 # Clamp XY to workspace
                 wx = np.clip(wx, p0[0]-MAX_DXY, p0[0]+MAX_DXY)
                 wy = np.clip(wy, p0[1]-MAX_DXY, p0[1]+MAX_DXY)
