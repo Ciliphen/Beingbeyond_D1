@@ -127,7 +127,7 @@ def main():
     print(f"       RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
     p0 = p_des.copy()  # ref for workspace clamping
     MAX_DXY = 0.20     # 20cm XY range from p0
-    z_offset = 0.10    # height above table, Z/X to adjust
+    z_offset = 0.0     # height above table, Z/X to adjust (0=just touch)
 
     # ── Mouse ─────────────────────────────────────────────────────────
     click_uv = None
@@ -225,10 +225,10 @@ def main():
                 hand.set_joint_pos(_map_hand(pos))
                 print(f"  🖐 {HAND_NAMES[hand_level]} ({pos:.2f})")
             elif key in (ord('z'), ord('Z')):
-                z_offset = min(z_offset + 0.01, 0.30)
+                z_offset = min(z_offset + 0.01, 0.20)
                 print(f"  📏 height above table: {z_offset*100:.0f}cm")
             elif key in (ord('x'), ord('X')):
-                z_offset = max(z_offset - 0.01, 0.01)
+                z_offset = max(z_offset - 0.01, -0.15)
                 print(f"  📏 height above table: {z_offset*100:.0f}cm")
 
     except KeyboardInterrupt:
