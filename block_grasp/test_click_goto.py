@@ -127,6 +127,7 @@ def main():
     print(f"       RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
     p0 = p_des.copy()  # ref for workspace clamping
     MAX_DXY = 0.20     # 20cm XY range from p0
+    z_offset = 0.10    # height above table, Z/X to adjust
 
     # ── Mouse ─────────────────────────────────────────────────────────
     click_uv = None
