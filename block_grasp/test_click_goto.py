@@ -147,10 +147,21 @@ def main():
                 wx, wy = float(w[0]), float(w[1])
                 print(f"\n[Click] ({u},{v}) → world=({wx:.3f}, {wy:.3f})")
 
+                # Get depth at click point for table height
+                _rgbd, depth = cam.rgbd(filtered=True)
+                dh, dw = depth.shape; _rh, _rw = _rgbd.shape[:2]
+                dh, dw = depth.shape; rh, rw = rgb.shape[:2]
+                sx, sy = dw/_rw, dh/_rh
+                u_d, v_d = int(u*sx), int(v*sy)
+                z_click = float(depth[v_d, u_d]) if 0 <= v_d < dh and 0 <= u_d < dw else 0.0
+                # Use measured depth + offset, fallback to Z_SAFE
+                z_target = z_click + 0.05 if z_click > 0.01 else Z_SAFE
+                print(f"  depth={z_click:.3f} → z_target={z_target:.3f}")
+
                 # Move: interpolate position to target (RPY already set at startup)
                 T_cur = kin.ee_in_base(q_head, q_arm)
                 p_start = T_cur[:3, 3].copy()
-                p_target = np.array([wx, wy, Z_SAFE])
+                p_target = np.array([wx, wy, z_target])
                 dist = np.linalg.norm(p_target - p_start)
                 n_steps = max(1, int(dist / 0.005))
 
