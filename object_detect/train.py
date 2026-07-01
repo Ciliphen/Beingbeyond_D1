@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MulanPSL-2.0
 """
-YOLOv11-OBB training script — adapted from roboarm ``object_detect/train.py``.
+YOLO OBB 训练脚本
 
-Usage:
-    conda activate bb_d1
+用法:
+    conda activate bb_gpu
     cd ~/Beingbeyond_D1
     python object_detect/train.py
 """
 from __future__ import annotations
-
-import os
-import warnings
-
+import os, sys, warnings
 warnings.filterwarnings("ignore")
+
 from ultralytics import YOLO
 
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
 if __name__ == "__main__":
-    model = YOLO("yolo11x-obb.pt")
+    model = YOLO("yolo11x-obb.pt")  # 首次运行会自动下载（约56MB）
 
     model.train(
-        data=os.path.join(os.path.dirname(__file__), "data.yaml"),
-        cache=False,
+        data=os.path.join(ROOT, "data.yaml"),
         imgsz=640,
         epochs=1000,
-        batch=32,
+        batch=8,          # x-large 模型显存有限，减小 batch
+        workers=4,         # 减少数据加载线程
         close_mosaic=10,
         device="0",
+        amp=False,
         optimizer="SGD",
-        project=os.path.join(os.path.dirname(__file__), "runs", "train"),
-        name="exp",
+        project=os.path.join(ROOT, "runs"),
+        name="train",
     )

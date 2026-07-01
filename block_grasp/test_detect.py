@@ -40,17 +40,26 @@ HEAD_PITCH_LIMIT = 60.0
 WINDOW = "D1  |  A/D yaw  W/S pitch  H home  SPACE save  Q quit"
 
 
+# 和 click_goto / calibrate_handeye 保持一致的标定头部姿态
+CALIB_HEAD_YAW_DEG = -10.0
+CALIB_HEAD_PITCH_DEG = 35.0
+
 class HeadController:
 
-    def __init__(self, dev="/dev/ttyUSB0", urdf_path="", baudrate=1_000_000):
+    def __init__(self, dev="/dev/ttyUSB0", urdf_path="", baudrate=1_000_000,
+                 init_yaw_deg=CALIB_HEAD_YAW_DEG, init_pitch_deg=CALIB_HEAD_PITCH_DEG):
         if not urdf_path:
             from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
             urdf_path = get_default_urdf_path()
         from beingbeyond_d1_sdk.head_arm import HeadArmRobot
         self._r = HeadArmRobot(urdf_path=urdf_path, dev=dev, baudrate=baudrate)
+        # Set head to calibration position (same as click_goto / calibrate_handeye)
+        self._yaw = math.radians(init_yaw_deg)
+        self._pitch = math.radians(init_pitch_deg)
         q = self._r.get_positions()
-        self._yaw = q[0]
-        self._pitch = q[1]
+        q[0] = self._yaw
+        q[1] = self._pitch
+        self._r.set_positions(q)
 
     @property
     def yaw(self): return math.degrees(self._yaw)
@@ -69,11 +78,11 @@ class HeadController:
         self._r.set_positions(q)
 
     def home(self):
-        self._yaw = 0.0
-        self._pitch = 0.0
+        self._yaw = math.radians(CALIB_HEAD_YAW_DEG)
+        self._pitch = math.radians(CALIB_HEAD_PITCH_DEG)
         q = self._r.get_positions()
-        q[0] = 0.0
-        q[1] = 0.0
+        q[0] = self._yaw
+        q[1] = self._pitch
         self._r.set_positions(q)
 
     def close(self):
@@ -84,7 +93,7 @@ def main():
     _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     p = argparse.ArgumentParser(description="D1 camera + head + detect + capture")
-    p.add_argument("--model", default=os.path.join(_ROOT, "object_detect", "runs", "积木方块", "best.pt"))
+    p.add_argument("--model", default=os.path.join(_ROOT, "object_detect", "runs", "train-3", "weights", "best.pt"))
     p.add_argument("--conf", type=float, default=0.85)
     p.add_argument("--iou", type=float, default=0.45)
     p.add_argument("--cam-width", type=int, default=1280)
@@ -119,7 +128,11 @@ def main():
 
     # ── Save dir ───────────────────────────────────────────────────────
     os.makedirs(args.save_dir, exist_ok=True)
-    saved = 0
+    # 从已有文件中找到最大编号，避免覆盖
+    existing = [int(f.split(".")[0]) for f in os.listdir(args.save_dir)
+                if f.endswith(".jpg") and f.split(".")[0].isdigit()]
+    saved = max(existing) + 1 if existing else 0
+    print(f"[Save] 从 {saved:05d}.jpg 开始编号 ({len(existing)} 张已有)")
 
     # ── Shared state (main ↔ inference thread) ─────────────────────────
     lock = threading.Lock()
