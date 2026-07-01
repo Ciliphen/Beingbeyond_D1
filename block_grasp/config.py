@@ -8,28 +8,86 @@ All units are SI (metres, radians) unless noted otherwise.
 """
 from __future__ import annotations
 
+import os
+
+# ── Calibration ────────────────────────────────────────────────────────────
+CALIB_PATH: str = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "handeye_calib.npz"
+)
+# Camera resolution during calibration — detection pixels are scaled to match.
+# If you change camera resolution, pixel coords are auto-scaled.
+CALIB_CAM_WIDTH: int = 1280
+CALIB_CAM_HEIGHT: int = 720
+
+# ── Head calibration (matches calibrate_handeye.py / test_click_goto.py) ─────
+HEAD_YAW_DEG: float = -10.0
+HEAD_PITCH_DEG: float = 35.0
+
 # ── YOLO detection ────────────────────────────────────────────────────────
 CONF_THRESHOLD: float = 0.85       # confidence threshold for detections
 IOU_THRESHOLD: float = 0.45        # IoU threshold for NMS
 
-# ── Grasp motion ──────────────────────────────────────────────────────────
+# ── Block geometry ──────────────────────────────────────────────────────────
+BLOCK_SIZE: float = 0.05               # cube side length (m)
+# Grasp Z = z_table + GRASP_Z_OFFSET (tune this!)
+# Negative = go below table surface. For a 5 cm cube, the hand needs to
+# wrap around the centre (~2.5 cm above table), but finger geometry means
+# the EE (wrist) must often go lower.  Start at 0 and tune downward.
+GRASP_Z_OFFSET: float = 0.0            # Z offset above table for grasp (m)
+
+# ── Motion ─────────────────────────────────────────────────────────────────
+Z_SAFE: float = 0.25                # safe Z height for approach / travel (m)
 APPROACH_HEIGHT_OFFSET: float = 0.10   # height above target to approach first (m)
-CATCH_DELAY_S: float = 0.1            # pause between motion steps (s)
+CATCH_DELAY_S: float = 0.8            # pause after hand open/close (CAN bus latency)
+INTERP_STEP_SIZE: float = 0.005       # interpolation step size for Jacobian IK (m)
+MAX_DXY: float = 0.50                 # max XY distance from initial EE position (m)
+
+# ── IK solver parameters ───────────────────────────────────────────────────
+IK_Z_WEIGHT: float = 3.0              # extra weight on Z axis (>1 = prioritise height)
+IK_POS_TOL: float = 0.005             # position tolerance for SLSQP final refinement (m)
+IK_TILT_TOL_DEG: float = 5.0          # tilt tolerance (deg)
+IK_YAW_TOL_DEG: float = 10.0          # yaw tolerance (deg)
+IK_MAX_ITERS: int = 200               # max SLSQP iterations
+IK_N_RESTARTS: int = 4                # multi-restart attempts
+IK_FAIL_THRESHOLD: float = 0.02       # max acceptable IK error for interpolated steps (m)
 
 # ── Dexterous hand poses (6-D normalised [0, 1]; 0=open, 1=closed) ───────
 # Joint order: thumb_cmc_pitch, thumb_cmc_yaw, index_mcp_pitch,
 #              middle_mcp_pitch, ring_mcp_pitch, pinky_mcp_pitch
 HAND_OPEN: list[float] = [0.1, 0.1, 0.1, 0.1, 0.0, 0.0]
-HAND_CLOSE: list[float] = [0.7, 0.5, 0.8, 0.8, 0.8, 0.8]
+HAND_GRASP: list[float] = [0.35, 0.3, 0.4, 0.4, 0.0, 0.0]   # ~4.5 cm grip
+HAND_CLOSE: list[float] = [0.7, 0.5, 0.8, 0.8, 0.8, 0.8]    # max tight
+
+# Grasp success: after closing to HAND_GRASP, the average finger position
+# should be in [GRASP_OK_MIN, GRASP_OK_MAX].  If too close to OPEN → empty
+# grasp.  If too close to CLOSE → nothing to block the fingers.
+GRASP_OK_MIN: float = 0.20   # below this = still open → no object
+GRASP_OK_MAX: float = 0.60   # above this = fully closed → nothing blocking
 
 # ── Place positions per class (base-frame x, y, z in metres) ──────────────
+# z = table_height + BLOCK_SIZE/2, so the cube sits on the table when released.
+# Tune these after measuring your actual table height!
 PLACE_POSITIONS: dict[str, list[float]] = {
-    "red_block":    [0.25, 0.10, 0.08],
-    "blue_block":   [0.25, -0.10, 0.08],
-    "yellow_block": [0.25, 0.00, 0.08],
+    "red_cube":    [0.25, 0.10, 0.105],
+    "blue_cube":   [0.25, -0.10, 0.105],
+    "green_cube":  [0.25, 0.00, 0.105],
+    "yellow_cube": [0.30, 0.00, 0.105],
 }
-DEFAULT_PLACE_Z: float = 0.08        # fallback place height (m)
+DEFAULT_PLACE_Z: float = 0.105       # fallback place height: table + half cube
+
+# ── OBB grasp point ───────────────────────────────────────────────────────
+# The OBB encloses the visible projection (top + side faces).
+# The grasp point lies between the box centre (0.0) and the bottom edge (1.0).
+# Tune this: 0.0 = box centre | 0.5 = bottom-3 centroid | 1.0 = bottom edge
+OBB_GRASP_RATIO: float = 0.5
 
 # ── Depth sampling ────────────────────────────────────────────────────────
 DEPTH_SAMPLE_RADIUS: int = 5          # pixel radius around detection centre
                                       # for median depth estimation
+
+# ── Target EE orientation (RPY in degrees) ────────────────────────────────
+# Roll + Pitch keep the hand perpendicular to the table.
+# Yaw is the default orientation; OBB angle is applied as a delta on top.
+EE_ROLL_DEG: float = 178.0
+EE_PITCH_DEG: float = 61.0
+EE_YAW_DEG: float = -175.0

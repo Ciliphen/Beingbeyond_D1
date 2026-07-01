@@ -14,7 +14,7 @@ pixel (u, v) + depth
 """
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 
 import cv2
 import numpy as np
@@ -93,6 +93,66 @@ def camera_to_base_3d(
     p_cam = np.array([*point_cam, 1.0], dtype=float)  # homogeneous
     p_base = T_base_camera @ p_cam
     return float(p_base[0]), float(p_base[1]), float(p_base[2])
+
+
+def pixel_to_world_2d(
+    u: float,
+    v: float,
+    H: np.ndarray,
+) -> Tuple[float, float]:
+    """Convert pixel to world XY via 2D homography (roboarm ``pixel2pos``).
+
+    Args:
+        u, v:  Pixel coordinates.
+        H:     3×3 homography matrix (pixel → base-frame XY平面).
+
+    Returns:
+        ``(x, y)`` in base frame (metres).
+    """
+    p_pix = np.array([u, v, 1.0], dtype=float)
+    w = H @ p_pix
+    w /= w[2]
+    return float(w[0]), float(w[1])
+
+
+def obb_bottom_center(
+    u: float,
+    v: float,
+    w: float,
+    h: float,
+    angle_deg: float,
+    ratio: float = 0.5,
+) -> Tuple[float, float]:
+    """Return the estimated **bottom-face centre** pixel of an OBB.
+
+    The OBB from YOLO encloses the visible projection of the cube
+    (top + side faces).  The geometric box-centre is too high and the
+    bottom edge is too low.  The true table-contact point lies between
+    them.
+
+    We compute the centroid of the bottom 3 corners (the visible lower
+    portion of the projection), then linearly interpolate between the
+    box centre and that centroid.
+
+    Args:
+        u, v:      OBB centre (pixels).
+        w, h:      OBB width & height (pixels).
+        angle_deg: OBB rotation angle (degrees, OpenCV convention).
+        ratio:     0.0 = box centre | 0.5 = halfway | 1.0 = bottom-3 centroid.
+
+    Returns:
+        ``(u_bot, v_bot)`` — estimated bottom-face centre in pixels.
+    """
+    ratio = max(0.0, min(1.0, ratio))
+    box = cv2.boxPoints(((u, v), (w, h), angle_deg))  # (4, 2)
+    # Sort by v (row) ascending → bottom 3 corners (largest v)
+    idx = np.argsort(box[:, 1])
+    u_bot3 = float(np.mean(box[idx[1:], 0]))
+    v_bot3 = float(np.mean(box[idx[1:], 1]))
+    # Interpolate between box centre and bottom-3 centroid
+    u_out = u + ratio * (u_bot3 - u)
+    v_out = v + ratio * (v_bot3 - v)
+    return u_out, v_out
 
 
 def estimate_grasp_angle_deg(

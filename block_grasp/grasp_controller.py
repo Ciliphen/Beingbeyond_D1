@@ -6,15 +6,17 @@ Block grasp controller for the D1 dexterous hand.
 Integrates the three-layer architecture:
 
     Perception  →  YOLO OBB detection + RealSense camera
-    Control     →  D1ArmPrimitive (IK) + D1HandPrimitive (fingers)
+    Control     →  HeadArmRobot (IK) + DexHand (fingers)
     Planning    →  detect → transform → plan → execute grasp/place
 
-Mirrors roboarm's ``chess/catch_and_place.py`` + ``arm/arm_base.py`` but
-adapted for the D1's 3D perception pipeline and 6-finger dexterous hand.
+Mirrors roboarm's ``chess/catch_and_place.py`` + ``arm/arm_base.py``.
+
+Uses **2D homography** (``pixel2pos``) for pixel→world transform — same as
+roboarm, reusing the existing ``handeye_calib.npz``.  No depth camera needed.
+Custom IK solvers (Jacobian + SLSQP) for Z-plane consistency.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import math
 import os
 import sys
@@ -29,31 +31,57 @@ from scipy.spatial.transform import Rotation as R
 # Project paths — allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from arm.d1_arm_primitive import D1ArmPrimitive
 from camera.d1_camera_primitive import D1CameraPrimitive
-from hand.d1_hand_primitive import D1HandPrimitive
 from object_detect.detect import (
     detect_objects_in_frame,
     draw_box,
     load_model,
 )
+from beingbeyond_d1_sdk.head_arm import HeadArmRobot
+from beingbeyond_d1_sdk.dex_hand import DexHand
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
+from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
+
+from block_grasp.ik_jacobian import jacobian_ik
+from block_grasp.ik_scipy import scipy_ik_multi_restart
 
 from .config import (
     APPROACH_HEIGHT_OFFSET,
+    BLOCK_SIZE,
+    CALIB_CAM_HEIGHT,
+    CALIB_CAM_WIDTH,
+    CALIB_PATH,
     CATCH_DELAY_S,
     CONF_THRESHOLD,
     DEFAULT_PLACE_Z,
-    DEPTH_SAMPLE_RADIUS,
-    HAND_CLOSE,
+    EE_PITCH_DEG,
+    EE_ROLL_DEG,
+    EE_YAW_DEG,
+    GRASP_OK_MAX,
+    GRASP_OK_MIN,
+    GRASP_Z_OFFSET,
+    HAND_GRASP,
     HAND_OPEN,
+    HEAD_PITCH_DEG,
+    HEAD_YAW_DEG,
+    IK_FAIL_THRESHOLD,
+    IK_MAX_ITERS,
+    IK_N_RESTARTS,
+    IK_POS_TOL,
+    IK_TILT_TOL_DEG,
+    IK_YAW_TOL_DEG,
+    IK_Z_WEIGHT,
+    INTERP_STEP_SIZE,
     IOU_THRESHOLD,
+    MAX_DXY,
+    OBB_GRASP_RATIO,
     PLACE_POSITIONS,
+    Z_SAFE,
 )
 from .coordinate_utils import (
-    camera_to_base_3d,
     estimate_grasp_angle_deg,
-    pixel_to_camera_3d,
+    obb_bottom_center,
+    pixel_to_world_2d,
 )
 
 # ---------------------------------------------------------------------------
@@ -63,22 +91,25 @@ from .coordinate_utils import (
 
 @dataclass
 class BlockDetection:
-    """A single detected block with its 3D position resolved."""
+    """A single detected block with its world position resolved via homography."""
 
     class_name: str
     class_id: int
     score: float
-    # Pixel-space OBB
+    # Pixel-space OBB centre (for draw_box)
     u: float
     v: float
     w: float
     h: float
     r_rad: float
-    # World-space (base frame)
+    # Pixel-space bottom-centre of OBB (for world-coordinate lookup)
+    u_bot: float
+    v_bot: float
+    # World-space (base frame) — XY from bottom-centre via homography
     x: float
     y: float
     z: float
-    # Recommended EE yaw (degrees)
+    # Recommended EE yaw offset (degrees) from OBB long edge
     grasp_angle_deg: float
 
 
@@ -93,9 +124,7 @@ class BlockGraspController:
     Usage::
 
         ctrl = BlockGraspController(
-            model_path="object_detect/runs/best.pt",
-            hand_type="right", hand_can="can0",
-            arm_dev="/dev/ttyUSB0",
+            model_path="object_detect/runs/train-3/weights/best.pt",
         )
         ctrl.run_loop()
     """
@@ -113,6 +142,7 @@ class BlockGraspController:
         cam_fps: int = 30,
         device: str = "",
         headless: bool = False,
+        auto_grasp: bool = False,
     ) -> None:
         """Initialise all hardware, models, and kinematics.
 
@@ -128,54 +158,176 @@ class BlockGraspController:
             cam_fps:    Camera frame rate.
             device:     Torch device for YOLO (empty = auto).
             headless:   If True, skip OpenCV display windows.
+            auto_grasp: If True, automatically grasp detected blocks.
+                        If False, press SPACE to trigger grasp.
         """
         self._headless = headless
+        self._auto_grasp = auto_grasp
+
+        # ── URDF path ────────────────────────────────────────────────────
+        if not urdf_path:
+            urdf_path = get_default_urdf_path()
+
+        # ── Calibration ──────────────────────────────────────────────────
+        print(f"[Init] Loading calibration: {CALIB_PATH}")
+        if not os.path.isfile(CALIB_PATH):
+            raise FileNotFoundError(
+                f"Calibration file not found: {CALIB_PATH}\n"
+                f"Run block_grasp/calibrate_handeye.py first."
+            )
+        calib = np.load(CALIB_PATH, allow_pickle=True)
+        self._H: np.ndarray = calib["H"]                 # 3×3 homography
+        self._calib_head_yaw: float = float(calib["head_yaw"])
+        self._calib_head_pitch: float = float(calib["head_pitch"])
+        # Table height from calibration points
+        if "world_pts" in calib:
+            self._W: Optional[np.ndarray] = calib["world_pts"]  # (N, 3)
+            self._z_table: float = float(np.median(self._W[:, 2]))
+        else:
+            self._W = None
+            self._z_table: float = 0.08  # fallback
+        print(f"       head: yaw={math.degrees(self._calib_head_yaw):.0f}°  "
+              f"pitch={math.degrees(self._calib_head_pitch):.0f}°  "
+              f"z_table={self._z_table:.3f}")
 
         # ── Perception ─────────────────────────────────────────────────
         print("[Init] Opening RealSense camera ...")
         self._camera = D1CameraPrimitive(
             width=cam_width, height=cam_height, fps=cam_fps
         )
-        self._intrinsics = self._camera.intrinsics()
 
         print(f"[Init] Loading YOLO model from {model_path} ...")
         self._model = load_model(model_path, device=device)
 
-        # ── Control ────────────────────────────────────────────────────
-        # URDF path
-        if not urdf_path:
-            from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
-            urdf_path = get_default_urdf_path()
-
+        # ── Control: arm + head ─────────────────────────────────────────
         print(f"[Init] Opening head–arm on {arm_dev} ...")
-        self._arm = D1ArmPrimitive(dev=arm_dev, urdf_path=urdf_path, baudrate=arm_baud)
+        self._robot = HeadArmRobot(
+            urdf_path=urdf_path, dev=arm_dev, baudrate=arm_baud
+        )
 
+        # ── Control: dexterous hand ─────────────────────────────────────
         print(f"[Init] Opening dexterous hand on {hand_can} ({hand_type}) ...")
-        self._hand = D1HandPrimitive(hand_type=hand_type, can_iface=hand_can)
+        self._hand = DexHand(
+            hand_type=hand_type, can_iface=hand_can, baudrate=1_000_000
+        )
 
-        # Kinematics
+        # ── Kinematics ──────────────────────────────────────────────────
         print("[Init] Setting up kinematics ...")
         self._kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf_path))
 
-        # ── Planning state ─────────────────────────────────────────────
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._future: Optional[concurrent.futures.Future] = None
+        # ── Startup: safe posture → set head → lift → rotate → open hand ──
+
+        # Target EE orientation: roll+pitch ⟂ table, yaw is default.
+        # Per-block OBB angle is applied as a delta Z-rotation on top.
+        self._R_target = R.from_euler(
+            'xyz',
+            [EE_ROLL_DEG, EE_PITCH_DEG, EE_YAW_DEG],
+            degrees=True,
+        ).as_matrix()
+
+        print("[Init] Moving to safe posture ...")
+        q_init = np.radians([0, 0, 0, -60, 60, 0, 0, 0])
+        self._robot.set_positions(q_init)
+        self._robot.wait_until_reached(q_init, active_joint_indices=range(8))
+        time.sleep(0.3)
+
+        print(f"[Init] Setting head to calibration position "
+              f"(yaw={HEAD_YAW_DEG:.0f}°, pitch={HEAD_PITCH_DEG:.0f}°) ...")
+        q = np.asarray(self._robot.get_positions(), dtype=float)
+        q[0] = math.radians(HEAD_YAW_DEG)
+        q[1] = math.radians(HEAD_PITCH_DEG)
+        self._robot.set_positions(q)
+        self._robot.wait_until_reached(q, active_joint_indices=[0, 1])
+        time.sleep(0.3)
+
+        # ── Lift to safe Z (SDK IK — same as test_click_goto.py) ────────
+        print("[Init] Lifting to safe height ...")
+        q_full = np.asarray(self._robot.get_positions(), dtype=float)
+        q_head, q_arm = self._kin.split_q(q_full)
+        T_cur = self._kin.ee_in_base(q_head, q_arm)
+        p_lift = T_cur[:3, 3].copy()
+        p_lift[2] = Z_SAFE + 0.05
+        T_lift = np.eye(4)
+        T_lift[:3, :3] = T_cur[:3, :3]
+        T_lift[:3, 3] = p_lift
+        q_hs, q_as, err, _ = self._kin.ik_T_ee_with_arm_only(
+            T_lift, q_head, q_arm,
+        )
+        if err < 0.05:
+            cmd = np.concatenate([q_hs, q_as])
+            cmd[0] = math.radians(HEAD_YAW_DEG)
+            cmd[1] = math.radians(HEAD_PITCH_DEG)
+            self._robot.set_positions(cmd)
+            self._robot.wait_until_reached(cmd, active_joint_indices=range(2, 8))
+            q_head, q_arm = self._kin.split_q(cmd)
+        else:
+            print(f"  ⚠ Lift IK error: {err:.3f}")
+
+        # ── SLERP rotate to target RPY (SDK IK — same as test_click_goto.py) ──
+        print("[Init] Rotating to target RPY ...")
+        T_cur = self._kin.ee_in_base(q_head, q_arm)
+        p_cur = T_cur[:3, 3]
+        R_cur = T_cur[:3, :3]
+        q0 = R.from_matrix(R_cur).as_quat()
+        q1 = R.from_matrix(self._R_target).as_quat()
+        # Shortest path (quaternion double-cover)
+        if np.dot(q0, q1) < 0:
+            q1 = -q1
+        omega = float(np.arccos(np.clip(np.dot(q0, q1), -1.0, 1.0)))
+        angle = omega * 2
+        n_rot = max(1, int(math.ceil(angle / 0.05)))
+        for i in range(n_rot):
+            a = (i + 1) / n_rot
+            if abs(omega) < 1e-10:
+                qi = q0
+            else:
+                qi = (np.sin((1 - a) * omega) * q0 +
+                      np.sin(a * omega) * q1) / np.sin(omega)
+            Ri = R.from_quat(qi).as_matrix()
+            T_rt = np.eye(4)
+            T_rt[:3, :3] = Ri
+            T_rt[:3, 3] = p_cur
+            q_hs, q_as, err, _ = self._kin.ik_T_ee_with_arm_only(
+                T_rt, q_head, q_arm,
+            )
+            if err < 0.05:
+                cmd = np.concatenate([q_hs, q_as])
+                cmd[0] = math.radians(HEAD_YAW_DEG)
+                cmd[1] = math.radians(HEAD_PITCH_DEG)
+                self._robot.set_positions(cmd)
+                time.sleep(0.02)
+                q_head, q_arm = self._kin.split_q(cmd)
+            else:
+                print(f"  ⚠ Rot IK err={err:.3f} at step {i+1}/{n_rot}")
+        rpy = R.from_matrix(self._R_target).as_euler('xyz', degrees=True)
+        print(f"       RPY=({rpy[0]:.0f}, {rpy[1]:.0f}, {rpy[2]:.0f})")
+
+        # Open hand
+        print("[Init] Opening hand ...")
+        self._hand.set_joint_pos(HAND_OPEN)
+        time.sleep(0.3)
+
+        # ── State ───────────────────────────────────────────────────────
+        self._busy = False
         self._step_count = 0
+
+        # Workspace reference: current EE XY after startup (for clamping detections)
+        T_start = self._kin.ee_in_base(q_head, q_arm)
+        self._ws_x0 = float(T_start[0, 3])
+        self._ws_y0 = float(T_start[1, 3])
 
         print("[Init] Ready.")
 
     # ── Perception helpers ─────────────────────────────────────────────────
 
-    def detect_blocks(
-        self,
-        frame: np.ndarray,
-        depth_frame: np.ndarray,
-    ) -> List[BlockDetection]:
-        """Detect blocks in a colour frame and resolve them to 3D.
+    def detect_blocks(self, frame: np.ndarray) -> List[BlockDetection]:
+        """Detect blocks in a colour frame and resolve to world coordinates.
+
+        Uses 2D homography (roboarm ``pixel2pos``) for XY, and fixed
+        table height + block size for Z.  No depth data needed.
 
         Args:
-            frame:       RGB colour image (H, W, 3).
-            depth_frame: Depth image in metres (H, W).
+            frame: RGB colour image (H, W, 3).
 
         Returns:
             List of resolved ``BlockDetection``, sorted by score descending.
@@ -184,165 +336,268 @@ class BlockGraspController:
             self._model, frame, conf_thres=CONF_THRESHOLD, iou_thres=IOU_THRESHOLD
         )
 
-        # Read current joint state for camera-in-base transform
-        q_full = self._arm._arm.get_positions()  # 8-D
-        q_head, q_arm = self._kin.split_q(np.asarray(q_full, dtype=float))
-        T_base_cam = self._kin.camera_in_base(q_head, q_arm)
+        # Scale factors: camera resolution → calibration resolution
+        sx = CALIB_CAM_WIDTH / max(frame.shape[1], 1)
+        sy = CALIB_CAM_HEIGHT / max(frame.shape[0], 1)
 
         blocks: List[BlockDetection] = []
         for (u, v, w, h, r), score, cls_id, cls_name in detections:
-            try:
-                # Pixel → camera 3D
-                Xc, Yc, Zc = pixel_to_camera_3d(
-                    u, v, depth_frame, self._intrinsics,
-                    sample_radius=DEPTH_SAMPLE_RADIUS,
-                )
-                # Camera → base 3D
-                x, y, z = camera_to_base_3d((Xc, Yc, Zc), T_base_cam)
+            # Use the **bottom-centre** of the OBB — the box encloses the
+            # visible projection (top + side faces), but the bottom edge
+            # is closest to where the cube actually touches the table.
+            u_bot, v_bot = obb_bottom_center(
+                u, v, w, h, np.rad2deg(r), ratio=OBB_GRASP_RATIO,
+            )
 
-                grasp_angle_deg = estimate_grasp_angle_deg(
-                    u, v, w, h, np.rad2deg(r)
-                )
+            # Scale pixel coords to calibration resolution, then apply homography
+            u_calib = u_bot * sx
+            v_calib = v_bot * sy
+            wx, wy = pixel_to_world_2d(u_calib, v_calib, self._H)
 
-                blocks.append(BlockDetection(
-                    class_name=cls_name,
-                    class_id=cls_id,
-                    score=score,
-                    u=u, v=v, w=w, h=h, r_rad=r,
-                    x=x, y=y, z=z,
-                    grasp_angle_deg=grasp_angle_deg,
-                ))
-            except ValueError as e:
-                print(f"[Detect] Skipping {cls_name} at ({u:.0f},{v:.0f}): {e}")
-                continue
+            # Clamp to workspace (matching test_click_goto.py safety)
+            wx = float(np.clip(wx, self._ws_x0 - MAX_DXY, self._ws_x0 + MAX_DXY))
+            wy = float(np.clip(wy, self._ws_y0 - MAX_DXY, self._ws_y0 + MAX_DXY))
+
+            # Z: top surface of cube on table
+            z_top = self._z_table + BLOCK_SIZE
+
+            grasp_angle_deg = estimate_grasp_angle_deg(
+                u, v, w, h, np.rad2deg(r)
+            )
+
+            blocks.append(BlockDetection(
+                class_name=cls_name,
+                class_id=cls_id,
+                score=score,
+                u=u, v=v, w=w, h=h, r_rad=r,
+                u_bot=u_bot, v_bot=v_bot,
+                x=wx, y=wy, z=z_top,
+                grasp_angle_deg=grasp_angle_deg,
+            ))
 
         blocks.sort(key=lambda b: b.score, reverse=True)
         return blocks
 
     # ── Motion primitives ──────────────────────────────────────────────────
 
-    def _hand_open(self) -> None:
-        """Open the dexterous hand."""
-        self._hand.move_joint(HAND_OPEN)
+    def _get_joint_state(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return current (q_head, q_arm) from the robot."""
+        q_full = np.asarray(self._robot.get_positions(), dtype=float)
+        return self._kin.split_q(q_full)
 
-    def _hand_close(self) -> None:
-        """Close the dexterous hand for a power grasp."""
-        self._hand.move_joint(HAND_CLOSE)
-
-    def _compute_topdown_quatpose(
+    def _make_target_pose(
         self,
         x: float,
         y: float,
         z: float,
-        yaw_deg: float,
+        yaw_offset_deg: float = 0.0,
     ) -> np.ndarray:
-        """Build a 7-D quatpose (x, y, z, qx, qy, qz, qw) for a top-down grasp.
+        """Build a 4×4 target pose in base frame.
 
-        EE Z points downward (world -Z), EE X aligns with *yaw_deg* in the
-        world XY plane.
+        Uses the default RPY (roll+pitch ⟂ table, fixed yaw).  The OBB
+        angle is applied as a **delta** Z-rotation on top — so the hand
+        stays perpendicular to the table and only rotates around the
+        vertical axis.
+
+        Args:
+            x, y, z:        Target position in base frame (metres).
+            yaw_offset_deg:  Delta yaw from OBB long edge (degrees).
+
+        Returns:
+            4×4 homogeneous transform.
         """
-        yaw = math.radians(yaw_deg)
-        R_ee = R.from_matrix([
-            [math.cos(yaw), -math.sin(yaw), 0],
-            [math.sin(yaw),  math.cos(yaw), 0],
-            [0,              0,            -1],
-        ])
-        qx, qy, qz, qw = R_ee.as_quat()  # SciPy: xyzw
-        return np.array([x, y, z, qx, qy, qz, qw], dtype=float)
+        R_ee = self._R_target.copy()
+        if abs(yaw_offset_deg) > 0.01:
+            R_yaw = R.from_euler('z', math.radians(yaw_offset_deg)).as_matrix()
+            R_ee = R_ee @ R_yaw
 
-    def _ik_solve_and_move(
+        T = np.eye(4)
+        T[:3, :3] = R_ee
+        T[:3, 3] = [x, y, z]
+        return T
+
+    def _interpolate_and_move(
         self,
-        quatpose: np.ndarray,
-        timeout_s: float = 10.0,
+        T_target: np.ndarray,
+        step_size: float = INTERP_STEP_SIZE,
+        z_weight: float = IK_Z_WEIGHT,
     ) -> bool:
-        """Run arm-only IK and command the robot.  Returns True on success."""
-        q_full = np.asarray(self._arm._arm.get_positions(), dtype=float)
-        q_head, q_arm = self._kin.split_q(q_full)
+        """Move EE to target pose using Jacobian IK with linear interpolation.
 
-        try:
-            q_head_sol, q_arm_sol, cost, inner_iters = (
-                self._kin.ik_ee_quatpose_with_arm_only(quatpose, q_head, q_arm)
-            )
-        except Exception as e:
-            print(f"[IK] Solver failed: {e}")
-            return False
+        Returns True on success.
+        """
+        q_head, q_arm = self._get_joint_state()
+        T_cur = self._kin.ee_in_base(q_head, q_arm)
+        p_start = T_cur[:3, 3].copy()
+        p_target = T_target[:3, 3]
+        R_target = T_target[:3, :3]
 
-        print(
-            f"[IK] cost={cost:.4f}, inner_iters={inner_iters}, "
-            f"arm_deg={[round(math.degrees(v),1) for v in q_arm_sol]}"
-        )
+        dist = float(np.linalg.norm(p_target - p_start))
+        n_steps = max(1, int(dist / step_size))
 
-        q_cmd = np.concatenate([q_head_sol, q_arm_sol])
-        self._arm._arm.set_positions(q_cmd)
+        for i in range(n_steps):
+            alpha = (i + 1) / n_steps
+            interp = p_start + alpha * (p_target - p_start)
+            T_step = np.eye(4)
+            T_step[:3, :3] = R_target
+            T_step[:3, 3] = interp
 
-        try:
-            dt = self._arm._arm.wait_until_reached(
-                q_cmd,
-                active_joint_indices=range(2, 8),  # arm joints only
-                pos_tol_deg=5.0,
-            )
-            if dt is None:
-                print("[IK] Timed out waiting for convergence.")
+            try:
+                q_hs, q_as, err, it = jacobian_ik(
+                    self._kin, T_step, q_head, q_arm,
+                    z_weight=z_weight, max_iters=IK_MAX_ITERS,
+                    tol_pos=1e-4,
+                )
+                if np.isnan(err) or err > IK_FAIL_THRESHOLD:
+                    print(f"  [IK] Jacobian fail at step {i}/{n_steps}: "
+                          f"err={err:.3f}  target=({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})")
+                    return False
+
+                cmd = np.concatenate([q_hs, q_as])
+                cmd[0] = math.radians(HEAD_YAW_DEG)
+                cmd[1] = math.radians(HEAD_PITCH_DEG)
+                self._robot.set_positions(cmd)
+                time.sleep(0.02)
+                q_head, q_arm = self._kin.split_q(cmd)
+            except Exception as e:
+                print(f"  [IK] Step {i} error: {e}")
                 return False
-        except Exception as e:
-            print(f"[IK] wait_until_reached error: {e}")
-            return False
 
         return True
+
+    def _refine_and_move(
+        self,
+        T_target: np.ndarray,
+        z_weight: float = IK_Z_WEIGHT,
+    ) -> float:
+        """Fine-positioning with SLSQP multi-restart IK.
+
+        Returns the final position error (metres).
+        """
+        q_head, q_arm = self._get_joint_state()
+
+        try:
+            q_hs, q_as, best_err, _ = scipy_ik_multi_restart(
+                self._kin, T_target, q_head, q_arm,
+                n_restarts=IK_N_RESTARTS, z_weight=z_weight,
+                pos_tol=IK_POS_TOL, tilt_tol_deg=IK_TILT_TOL_DEG,
+                yaw_tol_deg=IK_YAW_TOL_DEG,
+            )
+            cmd = np.concatenate([q_hs, q_as])
+            cmd[0] = math.radians(HEAD_YAW_DEG)
+            cmd[1] = math.radians(HEAD_PITCH_DEG)
+            self._robot.set_positions(cmd)
+            time.sleep(0.05)
+            return float(best_err)
+        except Exception as e:
+            print(f"  [IK] SLSQP refine error: {e}")
+            return 999.0
+
+    def _move_to_pose(
+        self,
+        T_target: np.ndarray,
+        refine: bool = True,
+    ) -> bool:
+        """Move EE to target pose: interpolate with Jacobian, then refine with SLSQP.
+
+        Args:
+            T_target: 4×4 target pose in base frame.
+            refine:   If True, run SLSQP multi-restart refinement at the end.
+
+        Returns True on success.
+        """
+        if not self._interpolate_and_move(T_target):
+            return False
+
+        if refine:
+            err = self._refine_and_move(T_target)
+            p_tgt = T_target[:3, 3]
+            rpy = R.from_matrix(T_target[:3, :3]).as_euler('xyz', degrees=True)
+            print(f"  → ({p_tgt[0]:.3f}, {p_tgt[1]:.3f}, {p_tgt[2]:.3f})  "
+                  f"err={err:.4f}  RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
+            return err < 0.05
+
+        return True
+
+    # ── Hand control ───────────────────────────────────────────────────────
+
+    def _hand_open(self) -> None:
+        """Open the dexterous hand."""
+        self._hand.set_joint_pos(HAND_OPEN)
+
+    def _hand_grasp(self) -> None:
+        """Close hand to grasp position (~4.5 cm for a 5 cm cube)."""
+        self._hand.set_joint_pos(HAND_GRASP)
+
+    # ── Grasp & place ──────────────────────────────────────────────────────
 
     def grasp_block(self, block: BlockDetection) -> bool:
         """Execute the full grasp sequence for a single block.
 
-        Sequence:  approach above → descend → close hand → lift
+        Sequence:  open hand → approach above → descend → close hand → lift
 
-        Returns True if grasp succeeded (hand not fully open after close).
+        Z calculation (2D homography, no depth):
+          - block.z = z_table + BLOCK_SIZE  (top surface of cube)
+          - z_grasp = z_table + GRASP_Z_OFFSET  (centre of cube, ~2.5 cm above table)
+
+        Returns True if grasp succeeded.
         """
-        z_target = block.z
-        z_approach = z_target + APPROACH_HEIGHT_OFFSET
+        z_grasp = self._z_table + GRASP_Z_OFFSET    # centre of cube
+        z_approach = block.z + APPROACH_HEIGHT_OFFSET  # above top surface
 
-        # ── ① Approach from above ──────────────────────────────────────
-        print(f"[Grasp] Approaching above {block.class_name} at "
-              f"({block.x:.3f}, {block.y:.3f}, {z_approach:.3f})")
+        # ── ① Open hand (wait for CAN to execute) ──────────────────────
+        print("[Grasp] Opening hand ...")
         self._hand_open()
         time.sleep(CATCH_DELAY_S)
 
-        qp_approach = self._compute_topdown_quatpose(
+        # ── ② Approach from above (Jacobian + SLSQP fallback) ───────────
+        print(f"[Grasp] Approaching above {block.class_name} at "
+              f"({block.x:.3f}, {block.y:.3f}, {z_approach:.3f})")
+        T_approach = self._make_target_pose(
             block.x, block.y, z_approach, block.grasp_angle_deg
         )
-        if not self._ik_solve_and_move(qp_approach):
-            print("[Grasp] Approach failed, aborting.")
-            return False
-        time.sleep(CATCH_DELAY_S * 2)
+        if not self._interpolate_and_move(T_approach):
+            print("[Grasp] Jacobian approach failed, trying SLSQP ...")
+            err = self._refine_and_move(T_approach)
+            if err > 0.05:
+                print(f"[Grasp] SLSQP approach also failed (err={err:.3f}), aborting.")
+                return False
+        time.sleep(CATCH_DELAY_S)
 
-        # ── ② Descend to grasp point ───────────────────────────────────
-        print(f"[Grasp] Descending to ({block.x:.3f}, {block.y:.3f}, {z_target:.3f})")
-        qp_target = self._compute_topdown_quatpose(
-            block.x, block.y, z_target, block.grasp_angle_deg
+        # ── ③ Descend to grasp point ────────────────────────────────────
+        print(f"[Grasp] Descending to "
+              f"({block.x:.3f}, {block.y:.3f}, {z_grasp:.3f})")
+        T_target = self._make_target_pose(
+            block.x, block.y, z_grasp, block.grasp_angle_deg
         )
-        if not self._ik_solve_and_move(qp_target):
+        if not self._move_to_pose(T_target, refine=True):
             print("[Grasp] Descent failed, aborting.")
             return False
         time.sleep(CATCH_DELAY_S)
 
-        # ── ③ Close hand ───────────────────────────────────────────────
-        print("[Grasp] Closing hand ...")
-        self._hand_close()
+        # ── ④ Close hand (wait for CAN to execute) ──────────────────────
+        print("[Grasp] Closing hand to grasp position ...")
+        self._hand_grasp()
         time.sleep(CATCH_DELAY_S)
 
-        # ── ④ Lift ─────────────────────────────────────────────────────
+        # ── ⑤ Lift ──────────────────────────────────────────────────────
         print("[Grasp] Lifting ...")
-        if not self._ik_solve_and_move(qp_approach):
+        if not self._interpolate_and_move(T_approach):
             print("[Grasp] Lift failed (object may still be grasped).")
-            # Don't return False — we may still have the block
         time.sleep(CATCH_DELAY_S)
 
-        # ── ⑤ Check grasp success ──────────────────────────────────────
-        # For dexterous hand: check if fingers are near closed position
-        # (not fully open = something is in the hand)
-        current_pos = self._hand.state_joint()
-        avg_pos = sum(current_pos) / len(current_pos)
-        grasp_ok = avg_pos > 0.3  # heuristic
-        print(f"[Grasp] {'OK' if grasp_ok else 'FAILED'} (avg finger pos={avg_pos:.2f})")
+        # ── ⑥ Check grasp success (roboarm-style: is gripper in range?) ──
+        current_pos = self._hand.read_joint_pos()
+        # Only check the 4 main fingers (thumb + index/middle/ring), skip pinky
+        active = [current_pos[i] for i in [0, 2, 3, 4]]  # thumb_pitch, idx, mid, ring
+        avg_pos = sum(active) / len(active)
+        # Grasp OK if fingers are in the expected range:
+        #   too low → still open → no object was there
+        #   too high → fully closed → nothing blocking fingers
+        grasp_ok = GRASP_OK_MIN <= avg_pos <= GRASP_OK_MAX
+        print(f"[Grasp] {'OK' if grasp_ok else 'FAILED'} "
+              f"(avg 4-finger pos={avg_pos:.2f}, "
+              f"expected [{GRASP_OK_MIN:.1f}–{GRASP_OK_MAX:.1f}])")
         return grasp_ok
 
     def place_block(self, place_xyz: Tuple[float, float, float]) -> bool:
@@ -355,27 +610,27 @@ class BlockGraspController:
 
         # ── ① Approach ─────────────────────────────────────────────────
         print(f"[Place] Approaching ({px:.3f}, {py:.3f}, {pz_approach:.3f})")
-        qp_approach = self._compute_topdown_quatpose(px, py, pz_approach, 0.0)
-        if not self._ik_solve_and_move(qp_approach):
+        T_approach = self._make_target_pose(px, py, pz_approach, 0.0)
+        if not self._interpolate_and_move(T_approach):
             print("[Place] Approach failed.")
             return False
-        time.sleep(CATCH_DELAY_S * 2)
+        time.sleep(CATCH_DELAY_S)
 
         # ── ② Descend ──────────────────────────────────────────────────
         print(f"[Place] Descending to ({px:.3f}, {py:.3f}, {pz:.3f})")
-        qp_place = self._compute_topdown_quatpose(px, py, pz, 0.0)
-        if not self._ik_solve_and_move(qp_place):
+        T_place = self._make_target_pose(px, py, pz, 0.0)
+        if not self._move_to_pose(T_place, refine=True):
             print("[Place] Descent failed.")
             return False
         time.sleep(CATCH_DELAY_S)
 
-        # ── ③ Open hand ────────────────────────────────────────────────
+        # ── ③ Open hand (wait for CAN) ──────────────────────────────────
         print("[Place] Opening hand ...")
         self._hand_open()
         time.sleep(CATCH_DELAY_S)
 
         # ── ④ Lift ─────────────────────────────────────────────────────
-        if not self._ik_solve_and_move(qp_approach):
+        if not self._interpolate_and_move(T_approach):
             print("[Place] Lift failed.")
             return False
 
@@ -384,52 +639,70 @@ class BlockGraspController:
     # ── Main loop ──────────────────────────────────────────────────────────
 
     def run_loop(self) -> None:
-        """Run the perception–action loop indefinitely.
+        """Run the perception–action loop.
 
-        Press **Esc** in the display window to exit.
+        - **SPACE** — trigger a single grasp+place cycle (manual mode)
+        - **ESC / Q** — exit
+        - **A** — toggle auto-grasp mode
         """
-        print("\n" + "=" * 50)
-        print("  D1 Block Grasp — YOLO + Dexterous Hand")
-        print("  Press ESC to exit")
-        print("=" * 50 + "\n")
+        mode_str = "AUTO" if self._auto_grasp else "MANUAL (press SPACE)"
+        print("\n" + "=" * 60)
+        print(f"  D1 Block Grasp — YOLO + Dexterous Hand  [{mode_str}]")
+        print(f"  Table Z = {self._z_table:.3f} m  |  "
+              f"Grasp Z = {self._z_table + GRASP_Z_OFFSET:.3f} m")
+        print("  SPACE = grasp  |  A = toggle auto  |  ESC/Q = quit")
+        print("=" * 60 + "\n")
 
         window = "D1 Block Grasp" if not self._headless else None
+        trigger_grasp = False
 
         try:
             while True:
                 t0 = time.time()
 
-                # ── Capture ────────────────────────────────────────────
-                rgb, depth = self._camera.rgbd(filtered=False)
+                # ── Capture (RGB only, no depth) ────────────────────────
+                rgb = self._camera.snapshot(filtered=False)
 
-                # ── Detect ─────────────────────────────────────────────
-                blocks = self.detect_blocks(rgb, depth)
+                # ── Detect (2D homography, no depth) ────────────────────
+                blocks = self.detect_blocks(rgb)
 
-                # ── Act (async, non-blocking) ──────────────────────────
-                idle = self._future is None or self._future.done()
+                # ── Act ────────────────────────────────────────────────
+                if not self._busy and blocks:
+                    should_grasp = self._auto_grasp or trigger_grasp
+                    trigger_grasp = False
 
-                if blocks and idle:
-                    target = blocks[0]
-                    print(f"\n[Loop] Target: {target.class_name} "
-                          f"({target.score:.2f}) @ "
-                          f"({target.x:.3f}, {target.y:.3f}, {target.z:.3f})")
+                    if should_grasp:
+                        self._busy = True
+                        target = blocks[0]
+                        print(f"\n[Loop] Target: {target.class_name} "
+                              f"({target.score:.2f}) @ "
+                              f"({target.x:.3f}, {target.y:.3f}, {target.z:.3f})"
+                              f"  angle={target.grasp_angle_deg:.0f}°")
 
-                    place_name = target.class_name
-                    place_xyz = PLACE_POSITIONS.get(
-                        place_name,
-                        [target.x, target.y, DEFAULT_PLACE_Z],
-                    )
+                        place_name = target.class_name
+                        place_xyz = tuple(PLACE_POSITIONS.get(
+                            place_name,
+                            [target.x, target.y, DEFAULT_PLACE_Z],
+                        ))
+                        # Override place Z with computed height
+                        place_xyz = (
+                            place_xyz[0],
+                            place_xyz[1],
+                            self._z_table + GRASP_Z_OFFSET,
+                        )
 
-                    def _do_grasp_and_place():
-                        if self.grasp_block(target):
-                            time.sleep(1.0)
-                            self.place_block(tuple(place_xyz))
-                        else:
-                            print("[Loop] Grasp failed, skipping place.")
+                        try:
+                            if self.grasp_block(target):
+                                time.sleep(1.0)
+                                self.place_block(place_xyz)
+                            else:
+                                print("[Loop] Grasp failed, skipping place.")
+                        except Exception as e:
+                            print(f"[Loop] Error during grasp/place: {e}")
+                        finally:
+                            self._busy = False
 
-                    self._future = self._executor.submit(_do_grasp_and_place)
-
-                # ── Visualise ───────────────────────────────────────────
+                # ── Visualise ──────────────────────────────────────────
                 vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
                 for b in blocks:
                     draw_box(
@@ -437,29 +710,52 @@ class BlockGraspController:
                         np.rad2deg(b.r_rad),
                         f"{b.class_name}: {b.score:.2f}",
                     )
-                    # Draw grasp point crosshair
-                    cx, cy = int(b.u), int(b.v)
+                    # Box centre — small grey dot for reference
+                    cv2.circle(vis, (int(b.u), int(b.v)), 3, (128, 128, 128), -1)
+                    # Bottom-centre — red crosshair (this is the grasp target)
                     cv2.drawMarker(
-                        vis, (cx, cy), (0, 0, 255),
+                        vis, (int(b.u_bot), int(b.v_bot)), (0, 0, 255),
                         markerType=cv2.MARKER_CROSS,
                         markerSize=20, thickness=2,
                     )
 
+                # Status overlay
                 fps = 1.0 / max(time.time() - t0, 1e-6)
-                cv2.putText(
-                    vis, f"FPS: {fps:.1f}",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0, (0, 255, 0), 2,
-                )
+                status = "BUSY" if self._busy else (
+                    "AUTO" if self._auto_grasp else "MANUAL")
+                cv2.putText(vis, f"FPS: {fps:.1f}  [{status}]",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                            1.0, (0, 255, 0), 2)
+                cv2.putText(vis, f"Dets: {len(blocks)}",
+                            (10, 65), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.9, (0, 255, 255), 2)
+
+                # Show EE position
+                try:
+                    qh, qa = self._get_joint_state()
+                    Tee = self._kin.ee_in_base(qh, qa)
+                    ex, ey, ez = Tee[0, 3], Tee[1, 3], Tee[2, 3]
+                    cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})",
+                                (10, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.8, (255, 200, 0), 2)
+                except Exception:
+                    pass
 
                 if self._headless:
-                    # Save periodically for headless debugging
                     if self._step_count % 30 == 0:
                         cv2.imwrite("/tmp/d1_block_grasp.jpg", vis)
                 else:
                     cv2.imshow(window, vis)
-                    if cv2.waitKey(1) & 0xFF == 27:  # ESC
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == 27 or key in (ord('q'), ord('Q')):
                         break
+                    elif key == 32:  # SPACE
+                        trigger_grasp = True
+                        print("[Loop] SPACE pressed — trigger grasp")
+                    elif key in (ord('a'), ord('A')):
+                        self._auto_grasp = not self._auto_grasp
+                        mode_str = "AUTO" if self._auto_grasp else "MANUAL"
+                        print(f"[Loop] Mode: {mode_str}")
 
                 self._step_count += 1
 
@@ -469,24 +765,25 @@ class BlockGraspController:
             self._shutdown()
 
     def _shutdown(self) -> None:
-        """Clean shutdown: stop executor, open hand, close hardware."""
-        print("[Shutdown] Stopping executor ...")
-        self._executor.shutdown(wait=True, cancel_futures=True)
-
+        """Clean shutdown: open hand, close hardware."""
         print("[Shutdown] Opening hand ...")
         try:
-            self._hand.move_joint(HAND_OPEN)
+            self._hand.set_joint_pos(HAND_OPEN)
             time.sleep(0.3)
         except Exception:
             pass
 
         print("[Shutdown] Closing hardware ...")
         try:
-            self._hand.close()
+            self._hand.open_hand()
         except Exception:
             pass
         try:
-            self._arm.close()
+            self._hand.close_can()
+        except Exception:
+            pass
+        try:
+            self._robot.close()
         except Exception:
             pass
         try:

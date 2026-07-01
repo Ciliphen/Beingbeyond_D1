@@ -6,7 +6,9 @@ Entry point for YOLO-guided block grasping with the D1 dexterous hand.
 Usage:
     conda activate bb_d1
     cd ~/Beingbeyond_D1
-    python block_grasp/run_block_grasp.py
+    python block_grasp/run_block_grasp.py                # manual mode (SPACE to trigger)
+    python block_grasp/run_block_grasp.py --auto         # auto-grasp mode
+    python block_grasp/run_block_grasp.py --headless     # no display window
 
 See ``block_grasp/config.py`` for tunable parameters.
 """
@@ -20,6 +22,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from block_grasp.grasp_controller import BlockGraspController
 
+# Default to the latest trained model
+_MODEL_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "object_detect", "runs",
+)
+
+def _find_best_model() -> str:
+    """Find the latest best.pt in object_detect/runs/train*/weights/."""
+    runs_dir = _MODEL_DIR
+    if not os.path.isdir(runs_dir):
+        return os.path.join(runs_dir, "train", "weights", "best.pt")
+
+    candidates = []
+    for name in os.listdir(runs_dir):
+        weights = os.path.join(runs_dir, name, "weights", "best.pt")
+        if os.path.isfile(weights):
+            candidates.append((os.path.getmtime(weights), weights))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+
+    # Fallback
+    return os.path.join(runs_dir, "train", "weights", "best.pt")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -28,11 +55,8 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        default=os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "object_detect", "runs", "积木方块", "best.pt",
-        ),
-        help="Path to YOLO OBB .pt checkpoint",
+        default=_find_best_model(),
+        help="Path to YOLO OBB .pt checkpoint (auto-detected if omitted)",
     )
     parser.add_argument(
         "--hand-type",
@@ -68,12 +92,12 @@ def main() -> None:
     parser.add_argument(
         "--cam-width",
         type=int,
-        default=640,
+        default=1280,     # MUST match calibration resolution!
     )
     parser.add_argument(
         "--cam-height",
         type=int,
-        default=480,
+        default=720,      # MUST match calibration resolution!
     )
     parser.add_argument(
         "--cam-fps",
@@ -91,7 +115,16 @@ def main() -> None:
         action="store_true",
         help="Run without OpenCV display windows",
     )
+    parser.add_argument(
+        "--auto",
+        dest="auto_grasp",
+        action="store_true",
+        help="Auto-grasp mode: continuously detect and grasp (default: SPACE to trigger)",
+    )
     args = parser.parse_args()
+
+    print(f"[Main] Model: {args.model}")
+    print(f"[Main] Mode: {'auto-grasp' if args.auto_grasp else 'manual (SPACE to trigger)'}")
 
     controller = BlockGraspController(
         model_path=args.model,
@@ -105,6 +138,7 @@ def main() -> None:
         cam_fps=args.cam_fps,
         device=args.device,
         headless=args.headless,
+        auto_grasp=args.auto_grasp,
     )
 
     try:
