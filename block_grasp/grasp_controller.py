@@ -57,8 +57,11 @@ from .config import (
     EE_PITCH_DEG,
     EE_ROLL_DEG,
     EE_YAW_DEG,
+    GRASP_OFFSET_X,
+    GRASP_OFFSET_Y,
     GRASP_OK_MAX,
     GRASP_OK_MIN,
+    GRASP_YAW_OFFSET_DEG,
     GRASP_Z_OFFSET,
     HAND_GRASP,
     HAND_OPEN,
@@ -323,8 +326,13 @@ class BlockGraspController:
     def detect_blocks(self, frame: np.ndarray) -> List[BlockDetection]:
         """Detect blocks in a colour frame and resolve to world coordinates.
 
-        Uses 2D homography (roboarm ``pixel2pos``) for XY, and fixed
-        table height + block size for Z.  No depth data needed.
+        Pipeline:
+        1. YOLO OBB → pixel bounding box
+        2. Homography → table-plane XY (parallax-skewed for objects above table)
+        3. Perspective correction → true XY accounting for cube height
+
+        Uses camera pose from FK, table height from calibration, and
+        known cube height (5 cm).  No depth camera needed.
 
         Args:
             frame: RGB colour image (H, W, 3).
@@ -336,25 +344,46 @@ class BlockGraspController:
             self._model, frame, conf_thres=CONF_THRESHOLD, iou_thres=IOU_THRESHOLD
         )
 
+        # Camera position in base frame (for perspective correction)
+        q_full = np.asarray(self._robot.get_positions(), dtype=float)
+        q_head, q_arm = self._kin.split_q(q_full)
+        T_base_cam = self._kin.camera_in_base(q_head, q_arm)
+        cx, cy, cz = T_base_cam[:3, 3]  # camera origin in base frame
+
+        # Height of the OBB-centre point above the table.
+        # The OBB encloses the full cube projection; its centre ≈ cube
+        # geometric centre (halfway up a 5 cm cube).
+        z_obj = self._z_table + BLOCK_SIZE / 2.0
+
+        # Perspective correction factor:
+        #   homography gives the intersection of the sight-line with the
+        #   table plane.  The cube sits *above* the table, so we walk back
+        #   along the ray from the table plane to the cube centre.
+        denom = self._z_table - cz  # ray z-component from camera to table
+        t_obj = (z_obj - cz) / denom if abs(denom) > 0.001 else 1.0
+
         # Scale factors: camera resolution → calibration resolution
         sx = CALIB_CAM_WIDTH / max(frame.shape[1], 1)
         sy = CALIB_CAM_HEIGHT / max(frame.shape[0], 1)
 
         blocks: List[BlockDetection] = []
         for (u, v, w, h, r), score, cls_id, cls_name in detections:
-            # Use the **bottom-centre** of the OBB — the box encloses the
-            # visible projection (top + side faces), but the bottom edge
-            # is closest to where the cube actually touches the table.
+            # Bottom-centre pixel of the OBB (see coordinate_utils)
             u_bot, v_bot = obb_bottom_center(
                 u, v, w, h, np.rad2deg(r), ratio=OBB_GRASP_RATIO,
             )
 
-            # Scale pixel coords to calibration resolution, then apply homography
+            # Homography: pixel → table-plane XY
             u_calib = u_bot * sx
             v_calib = v_bot * sy
-            wx, wy = pixel_to_world_2d(u_calib, v_calib, self._H)
+            wx_hom, wy_hom = pixel_to_world_2d(u_calib, v_calib, self._H)
 
-            # Clamp to workspace (matching test_click_goto.py safety)
+            # Perspective correction: walk back along the sight ray from
+            # the table plane to the cube centre (same XY as bottom face).
+            wx = cx + (wx_hom - cx) * t_obj
+            wy = cy + (wy_hom - cy) * t_obj
+
+            # Clamp to workspace
             wx = float(np.clip(wx, self._ws_x0 - MAX_DXY, self._ws_x0 + MAX_DXY))
             wy = float(np.clip(wy, self._ws_y0 - MAX_DXY, self._ws_y0 + MAX_DXY))
 
@@ -390,29 +419,21 @@ class BlockGraspController:
         x: float,
         y: float,
         z: float,
-        yaw_offset_deg: float = 0.0,
     ) -> np.ndarray:
-        """Build a 4×4 target pose in base frame.
+        """Build a 4×4 target pose in base frame (base RPY, no yaw offset).
 
-        Uses the default RPY (roll+pitch ⟂ table, fixed yaw).  The OBB
-        angle is applied as a **delta** Z-rotation on top — so the hand
-        stays perpendicular to the table and only rotates around the
-        vertical axis.
+        The IK solves for this base pose.  Wrist rotation (OBB angle) is
+        applied directly to **joint_6** after IK — much simpler and does
+        not affect position accuracy.
 
         Args:
-            x, y, z:        Target position in base frame (metres).
-            yaw_offset_deg:  Delta yaw from OBB long edge (degrees).
+            x, y, z:  Target position in base frame (metres).
 
         Returns:
             4×4 homogeneous transform.
         """
-        R_ee = self._R_target.copy()
-        if abs(yaw_offset_deg) > 0.01:
-            R_yaw = R.from_euler('z', math.radians(yaw_offset_deg)).as_matrix()
-            R_ee = R_ee @ R_yaw
-
         T = np.eye(4)
-        T[:3, :3] = R_ee
+        T[:3, :3] = self._R_target
         T[:3, 3] = [x, y, z]
         return T
 
@@ -421,8 +442,12 @@ class BlockGraspController:
         T_target: np.ndarray,
         step_size: float = INTERP_STEP_SIZE,
         z_weight: float = IK_Z_WEIGHT,
+        j6_offset_rad: float = 0.0,
     ) -> bool:
         """Move EE to target pose using Jacobian IK with linear interpolation.
+
+        *j6_offset_rad* is added to joint_6 after each IK step so the
+        wrist rotates to the OBB angle without affecting position accuracy.
 
         Returns True on success.
         """
@@ -453,6 +478,9 @@ class BlockGraspController:
                           f"err={err:.3f}  target=({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})")
                     return False
 
+                # Apply OBB yaw directly to joint_6 (wrist rotation)
+                q_as[5] += j6_offset_rad
+
                 cmd = np.concatenate([q_hs, q_as])
                 cmd[0] = math.radians(HEAD_YAW_DEG)
                 cmd[1] = math.radians(HEAD_PITCH_DEG)
@@ -469,8 +497,11 @@ class BlockGraspController:
         self,
         T_target: np.ndarray,
         z_weight: float = IK_Z_WEIGHT,
+        j6_offset_rad: float = 0.0,
     ) -> float:
         """Fine-positioning with SLSQP multi-restart IK.
+
+        *j6_offset_rad* is added to joint_6 after IK (OBB wrist rotation).
 
         Returns the final position error (metres).
         """
@@ -483,6 +514,9 @@ class BlockGraspController:
                 pos_tol=IK_POS_TOL, tilt_tol_deg=IK_TILT_TOL_DEG,
                 yaw_tol_deg=IK_YAW_TOL_DEG,
             )
+            # Apply OBB yaw directly to joint_6 (wrist rotation)
+            q_as[5] += j6_offset_rad
+
             cmd = np.concatenate([q_hs, q_as])
             cmd[0] = math.radians(HEAD_YAW_DEG)
             cmd[1] = math.radians(HEAD_PITCH_DEG)
@@ -497,24 +531,25 @@ class BlockGraspController:
         self,
         T_target: np.ndarray,
         refine: bool = True,
+        j6_offset_rad: float = 0.0,
     ) -> bool:
         """Move EE to target pose: interpolate with Jacobian, then refine with SLSQP.
 
         Args:
-            T_target: 4×4 target pose in base frame.
-            refine:   If True, run SLSQP multi-restart refinement at the end.
+            T_target:      4×4 target pose in base frame.
+            refine:        If True, run SLSQP multi-restart refinement at the end.
+            j6_offset_rad: Wrist rotation (joint_6) offset in radians.
 
         Returns True on success.
         """
-        if not self._interpolate_and_move(T_target):
+        if not self._interpolate_and_move(T_target, j6_offset_rad=j6_offset_rad):
             return False
 
         if refine:
-            err = self._refine_and_move(T_target)
+            err = self._refine_and_move(T_target, j6_offset_rad=j6_offset_rad)
             p_tgt = T_target[:3, 3]
-            rpy = R.from_matrix(T_target[:3, :3]).as_euler('xyz', degrees=True)
             print(f"  → ({p_tgt[0]:.3f}, {p_tgt[1]:.3f}, {p_tgt[2]:.3f})  "
-                  f"err={err:.4f}  RPY=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})")
+                  f"err={err:.4f}")
             return err < 0.05
 
         return True
@@ -540,10 +575,18 @@ class BlockGraspController:
           - block.z = z_table + BLOCK_SIZE  (top surface of cube)
           - z_grasp = z_table + GRASP_Z_OFFSET  (centre of cube, ~2.5 cm above table)
 
+        The OBB angle is applied directly to **joint_6** (wrist rotation)
+        after IK, so position accuracy is unaffected.
+
         Returns True if grasp succeeded.
         """
         z_grasp = self._z_table + GRASP_Z_OFFSET    # centre of cube
         z_approach = block.z + APPROACH_HEIGHT_OFFSET  # above top surface
+
+        # OBB angle → joint_6 offset (wrist rotation only)
+        j6_offset = math.radians(block.grasp_angle_deg + GRASP_YAW_OFFSET_DEG)
+        gx = block.x + GRASP_OFFSET_X
+        gy = block.y + GRASP_OFFSET_Y
 
         # ── ① Open hand (wait for CAN to execute) ──────────────────────
         print("[Grasp] Opening hand ...")
@@ -552,13 +595,12 @@ class BlockGraspController:
 
         # ── ② Approach from above (Jacobian + SLSQP fallback) ───────────
         print(f"[Grasp] Approaching above {block.class_name} at "
-              f"({block.x:.3f}, {block.y:.3f}, {z_approach:.3f})")
-        T_approach = self._make_target_pose(
-            block.x, block.y, z_approach, block.grasp_angle_deg
-        )
-        if not self._interpolate_and_move(T_approach):
+              f"({gx:.3f}, {gy:.3f}, {z_approach:.3f})  "
+              f"j6={math.degrees(j6_offset):.0f}°")
+        T_approach = self._make_target_pose(gx, gy, z_approach)
+        if not self._interpolate_and_move(T_approach, j6_offset_rad=j6_offset):
             print("[Grasp] Jacobian approach failed, trying SLSQP ...")
-            err = self._refine_and_move(T_approach)
+            err = self._refine_and_move(T_approach, j6_offset_rad=j6_offset)
             if err > 0.05:
                 print(f"[Grasp] SLSQP approach also failed (err={err:.3f}), aborting.")
                 return False
@@ -566,11 +608,9 @@ class BlockGraspController:
 
         # ── ③ Descend to grasp point ────────────────────────────────────
         print(f"[Grasp] Descending to "
-              f"({block.x:.3f}, {block.y:.3f}, {z_grasp:.3f})")
-        T_target = self._make_target_pose(
-            block.x, block.y, z_grasp, block.grasp_angle_deg
-        )
-        if not self._move_to_pose(T_target, refine=True):
+              f"({gx:.3f}, {gy:.3f}, {z_grasp:.3f})")
+        T_target = self._make_target_pose(gx, gy, z_grasp)
+        if not self._move_to_pose(T_target, refine=True, j6_offset_rad=j6_offset):
             print("[Grasp] Descent failed, aborting.")
             return False
         time.sleep(CATCH_DELAY_S)
@@ -582,7 +622,7 @@ class BlockGraspController:
 
         # ── ⑤ Lift ──────────────────────────────────────────────────────
         print("[Grasp] Lifting ...")
-        if not self._interpolate_and_move(T_approach):
+        if not self._interpolate_and_move(T_approach, j6_offset_rad=j6_offset):
             print("[Grasp] Lift failed (object may still be grasped).")
         time.sleep(CATCH_DELAY_S)
 
@@ -610,7 +650,7 @@ class BlockGraspController:
 
         # ── ① Approach ─────────────────────────────────────────────────
         print(f"[Place] Approaching ({px:.3f}, {py:.3f}, {pz_approach:.3f})")
-        T_approach = self._make_target_pose(px, py, pz_approach, 0.0)
+        T_approach = self._make_target_pose(px, py, pz_approach)
         if not self._interpolate_and_move(T_approach):
             print("[Place] Approach failed.")
             return False
@@ -618,7 +658,7 @@ class BlockGraspController:
 
         # ── ② Descend ──────────────────────────────────────────────────
         print(f"[Place] Descending to ({px:.3f}, {py:.3f}, {pz:.3f})")
-        T_place = self._make_target_pose(px, py, pz, 0.0)
+        T_place = self._make_target_pose(px, py, pz)
         if not self._move_to_pose(T_place, refine=True):
             print("[Place] Descent failed.")
             return False

@@ -75,11 +75,23 @@ PLACE_POSITIONS: dict[str, list[float]] = {
 }
 DEFAULT_PLACE_Z: float = 0.105       # fallback place height: table + half cube
 
+# ── Grasp position offset (world XY, metres) ──────────────────────────────
+# Fine-tune the grasp point relative to the detected bottom-face centre.
+GRASP_OFFSET_X: float = 0.0     # +X = forward (away from robot base)
+GRASP_OFFSET_Y: float = -0.02    # +Y = left, -Y = right (2 cm right)
+
+# ── Grasp yaw compensation ────────────────────────────────────────────────
+# The OBB angle is perpendicular to the long edge.  The thumb sits on the
+# LEFT side of the palm (for right hand).  Tune this offset so the thumb
+# wraps around the cube instead of bumping into it.
+GRASP_YAW_OFFSET_DEG: float = 0.0   # add to OBB angle (try ±90 if thumb misaligned)
+
 # ── OBB grasp point ───────────────────────────────────────────────────────
 # The OBB encloses the visible projection (top + side faces).
 # The grasp point lies between the box centre (0.0) and the bottom edge (1.0).
-# Tune this: 0.0 = box centre | 0.5 = bottom-3 centroid | 1.0 = bottom edge
-OBB_GRASP_RATIO: float = 0.5
+# With perspective correction enabled, the geometric offset is handled
+# automatically. Set > 0 only if fine-tuning is needed.
+OBB_GRASP_RATIO: float = 0.0
 
 # ── Depth sampling ────────────────────────────────────────────────────────
 DEPTH_SAMPLE_RADIUS: int = 5          # pixel radius around detection centre

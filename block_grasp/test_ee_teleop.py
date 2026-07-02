@@ -197,8 +197,13 @@ def main():
                         T_ach = kin.ee_in_base(q_head, q_arm)
                         p_ach = T_ach[:3, 3]
                         rpy = R.from_matrix(T_ach[:3,:3]).as_euler('xyz', degrees=True)
+                        # All joints in degrees
+                        q_full = np.concatenate([q_hs, q_as])
+                        j_deg = [f"{math.degrees(v):.1f}" for v in q_full]
                         print(f"  → ({p_ach[0]:.3f}, {p_ach[1]:.3f}, {p_ach[2]:.3f})  "
-                              f"rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  err={err:.4f}")
+                              f"rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  err={err:.4f}\n"
+                              f"     joints(°): head_yaw={j_deg[0]} head_pitch={j_deg[1]} | "
+                              f"j1={j_deg[2]} j2={j_deg[3]} j3={j_deg[4]} j4={j_deg[5]} j5={j_deg[6]} j6={j_deg[7]}")
                 except Exception as e:
                     print(f"  ✗ IK: {e}")
 
