@@ -20,11 +20,6 @@ OUT = os.path.join(ROOT, "object_detect", "dataset")
 CLASS_NAMES = ["red_cube", "blue_cube", "green_cube", "yellow_cube"]
 TRAIN_RATIO = 0.8
 
-# Shift OBB centre downward so the box targets the bottom face instead of
-# the full visible projection (top + side faces).  Ratio of OBB height.
-# 0.0 = no shift (full cube) | 0.25 = bottom face (recommended)
-OBB_V_SHIFT_RATIO = 0.25
-
 
 def labelme_to_obb(img_path, json_path, label_dir, preview_dir):
     with open(json_path) as f:
@@ -41,13 +36,8 @@ def labelme_to_obb(img_path, json_path, label_dir, preview_dir):
             continue
         cid = CLASS_NAMES.index(name)
         pts = np.array(s["points"], dtype=np.float32)
-        rect = cv2.minAreaRect(pts)          # ((cx, cy), (bw, bh), angle)
-        (cx, cy), (bw, bh), angle = rect
-
-        # Shift centre downward → target bottom face instead of full cube
-        cy = cy + OBB_V_SHIFT_RATIO * bh
-
-        box = cv2.boxPoints(((cx, cy), (bw, bh), angle)) / scale
+        rect = cv2.minAreaRect(pts)
+        box = cv2.boxPoints(rect) / scale
         flat = box.reshape(-1)
         lines.append(f"{cid} " + " ".join(f"{v:.6f}" for v in flat) + "\n")
 

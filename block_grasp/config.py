@@ -55,7 +55,7 @@ IK_FAIL_THRESHOLD: float = 0.02       # max acceptable IK error for interpolated
 # Joint order: thumb_cmc_pitch, thumb_cmc_yaw, index_mcp_pitch,
 #              middle_mcp_pitch, ring_mcp_pitch, pinky_mcp_pitch
 HAND_OPEN: list[float] = [0.1, 0.1, 0.1, 0.1, 0.0, 0.0]
-HAND_GRASP: list[float] = [0.35, 0.3, 0.4, 0.4, 0.0, 0.0]   # ~4.5 cm grip
+HAND_GRASP: list[float] = [0.38, 0.33, 0.43, 0.43, 0.0, 0.0]   # ~4.2 cm grip
 HAND_CLOSE: list[float] = [0.7, 0.5, 0.8, 0.8, 0.8, 0.8]    # max tight
 
 # Grasp success: after closing to HAND_GRASP, the average finger position
@@ -78,7 +78,7 @@ DEFAULT_PLACE_Z: float = 0.105       # fallback place height: table + half cube
 # ── Grasp position offset (world XY, metres) ──────────────────────────────
 # Fine-tune the grasp point relative to the detected bottom-face centre.
 GRASP_OFFSET_X: float = 0.0     # +X = forward (away from robot base)
-GRASP_OFFSET_Y: float = -0.02    # +Y = left, -Y = right (2 cm right)
+GRASP_OFFSET_Y: float = -0.025   # +Y = left, -Y = right (2.5 cm right)
 
 # ── Grasp yaw compensation ────────────────────────────────────────────────
 # The OBB angle is perpendicular to the long edge.  The thumb sits on the

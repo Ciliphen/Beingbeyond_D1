@@ -22,12 +22,13 @@ if __name__ == "__main__":
         data=os.path.join(ROOT, "data.yaml"),
         imgsz=640,
         epochs=1000,
-        batch=8,          # x-large 模型显存有限，减小 batch
-        workers=4,         # 减少数据加载线程
+        batch=8,
+        workers=4,
         close_mosaic=10,
         device="0",
         amp=False,
         optimizer="SGD",
+        plots=False,       # skip PR-curve plotting (matplotlib font bug)
         project=os.path.join(ROOT, "runs"),
         name="train",
     )
