@@ -52,14 +52,44 @@ class HeadController:
             from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
             urdf_path = get_default_urdf_path()
         from beingbeyond_d1_sdk.head_arm import HeadArmRobot
+        from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
         self._r = HeadArmRobot(urdf_path=urdf_path, dev=dev, baudrate=baudrate)
-        # Set head to calibration position (same as click_goto / calibrate_handeye)
+        self._kin = D1Kinematics(D1KinematicsConfig(urdf_path=urdf_path))
+
+        # ── Safe posture (same as test_ee_teleop.py) ────────────────────
+        q_init = np.radians([0, 0, 0, -60, 60, 0, 0, 0])
+        self._r.set_positions(q_init)
+        self._r.wait_until_reached(q_init, active_joint_indices=range(8))
+        time.sleep(0.3)
+
+        # ── Set head to calibration position ────────────────────────────
         self._yaw = math.radians(init_yaw_deg)
         self._pitch = math.radians(init_pitch_deg)
-        q = self._r.get_positions()
+        q = np.asarray(self._r.get_positions(), dtype=float)
         q[0] = self._yaw
         q[1] = self._pitch
         self._r.set_positions(q)
+        self._r.wait_until_reached(q, active_joint_indices=[0, 1])
+        time.sleep(0.3)
+
+        # ── Lift arm to safe Z, out of camera view ─────────────────────
+        q_full = np.asarray(self._r.get_positions(), dtype=float)
+        q_head, q_arm = self._kin.split_q(q_full)
+        T_cur = self._kin.ee_in_base(q_head, q_arm)
+        p_lift = T_cur[:3, 3].copy()
+        p_lift[2] = 0.30  # lift to 30cm
+        T_lift = np.eye(4)
+        T_lift[:3, :3] = T_cur[:3, :3]
+        T_lift[:3, 3] = p_lift
+        q_hs, q_as, err, _ = self._kin.ik_T_ee_with_arm_only(
+            T_lift, q_head, q_arm,
+        )
+        if err < 0.05:
+            cmd = np.concatenate([q_hs, q_as])
+            cmd[0] = math.radians(init_yaw_deg)
+            cmd[1] = math.radians(init_pitch_deg)
+            self._r.set_positions(cmd)
+            self._r.wait_until_reached(cmd, active_joint_indices=range(2, 8))
 
     @property
     def yaw(self): return math.degrees(self._yaw)
