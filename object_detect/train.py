@@ -25,7 +25,7 @@ if __name__ == "__main__":
         batch=8,
         workers=4,
         close_mosaic=10,
-        device="0",
+        device="0", 
         amp=False,
         optimizer="SGD",
         plots=False,       # skip PR-curve plotting (matplotlib font bug)
