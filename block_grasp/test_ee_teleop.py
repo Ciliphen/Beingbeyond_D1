@@ -29,12 +29,14 @@ from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
 from block_grasp.ik_scipy import scipy_ik
+from block_grasp.config import GRAVITY_SAG_FACTOR, JOINT_JUMP_THR_DEG
 
 STEP = 0.01   # 1cm
 Z_STEP = 0.01
 ORI_STEP = math.radians(5.0)  # 5°
 MAX_OFFSET = np.array([0.30, 0.30, 0.15])
 IK_FAIL_THR = 0.02  # m — Jacobian IK converges to ~0.0001, 2cm is generous
+JOINT_JUMP_THR = math.radians(JOINT_JUMP_THR_DEG)  # near-singularity guard (from config)
 
 
 def _rot_x(a): c,s = math.cos(a), math.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]], dtype=float)
@@ -92,6 +94,7 @@ def main():
     T0 = kin.ee_in_base(q_head, q_arm)
     p0 = T0[:3, 3].copy()
     R0 = T0[:3, :3].copy()
+    p_desired = p0.copy()   # user-commanded (uncompensated) EE position
 
     hand.set_joint_pos(_map_hand(0.0))  # open at start
     print(f"       EE: ({p0[0]:.3f}, {p0[1]:.3f}, {p0[2]:.3f})  hand=open")
@@ -114,9 +117,8 @@ def main():
                 time.sleep(0.02)
                 continue
 
-            # ── Read actual current EE pose (every cycle, no virtual drift) ──
+            # ── Current EE orientation from FK (translation uses p_desired) ──
             T_cur = kin.ee_in_base(q_head, q_arm)
-            p_cur = T_cur[:3, 3].copy()
             R_cur = T_cur[:3, :3].copy()
             delta_pos = np.zeros(3)
             delta_R = np.eye(3)
@@ -161,26 +163,36 @@ def main():
                 q_head, q_arm = kin.split_q(q_init)
                 robot.set_positions(q_init)
                 robot.wait_until_reached(q_init, active_joint_indices=range(8))
-                p_cur = p0.copy(); R_cur = R0.copy()
+                p_desired = p0.copy(); R_cur = R0.copy()
                 print("  ↺ reset to start")
             # ── Quit ──────────────────────────────────────────────────
             elif ch == '\x1b':  # ESC
                 break
 
             if moved:
-                # Apply delta to current actual pose
-                p_new = p_cur + delta_pos
+                # Delta acts on the *desired* (uncompensated) position so the
+                # gravity-sag term below is re-derived from scratch each step
+                # and never accumulates.
+                p_prev = p_desired.copy()   # rollback target if IK is rejected
+                p_desired = p_desired + delta_pos
                 R_new = _ortho(delta_R @ R_cur)
 
                 # Clamp workspace relative to origin p0
-                offset = p_new - p0
-                offset = np.clip(offset, -MAX_OFFSET, MAX_OFFSET)
-                p_new = p0 + offset
+                offset = np.clip(p_desired - p0, -MAX_OFFSET, MAX_OFFSET)
+                p_desired = p0 + offset
+
+                # Gravity-sag compensation: the arm droops under its own weight
+                # the further it reaches, so raise the IK target Z to match.
+                # Same cubic model as grasp_controller (dz ∝ r³).
+                dist = math.hypot(p_desired[0], p_desired[1])
+                z_sag = GRAVITY_SAG_FACTOR * dist ** 3
+                p_tgt = p_desired.copy()
+                p_tgt[2] += z_sag
 
                 # Build target transform
                 T_tgt = np.eye(4, dtype=float)
                 T_tgt[:3, :3] = R_new
-                T_tgt[:3, 3] = p_new
+                T_tgt[:3, 3] = p_tgt
 
                 # IK (SLSQP, roboarm-style: tilt/yaw decomposition)
                 try:
@@ -188,8 +200,14 @@ def main():
                         kin, T_tgt, q_head, q_arm,
                         z_weight=2.0, pos_tol=0.005,
                         tilt_tol_deg=5, yaw_tol_deg=10, max_iters=200)
+                    dq_max = float(np.max(np.abs(q_as - q_arm)))
                     if np.isnan(err) or err > IK_FAIL_THR:
                         print(f"  ⚠ IK fail: err={err:.3f}  → not moved")
+                        p_desired = p_prev
+                    elif dq_max > JOINT_JUMP_THR:
+                        print(f"  ⚠ joint jump {math.degrees(dq_max):.0f}° "
+                              f"(near singularity) → not moved")
+                        p_desired = p_prev
                     else:
                         robot.set_positions(np.concatenate([q_hs, q_as]))
                         q_head, q_arm = q_hs, q_as
@@ -201,11 +219,13 @@ def main():
                         q_full = np.concatenate([q_hs, q_as])
                         j_deg = [f"{math.degrees(v):.1f}" for v in q_full]
                         print(f"  → ({p_ach[0]:.3f}, {p_ach[1]:.3f}, {p_ach[2]:.3f})  "
-                              f"rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  err={err:.4f}\n"
+                              f"rpy=({rpy[0]:.0f},{rpy[1]:.0f},{rpy[2]:.0f})  "
+                              f"sag=+{z_sag*1000:.0f}mm  err={err:.4f}\n"
                               f"     joints(°): head_yaw={j_deg[0]} head_pitch={j_deg[1]} | "
                               f"j1={j_deg[2]} j2={j_deg[3]} j3={j_deg[4]} j4={j_deg[5]} j5={j_deg[6]} j6={j_deg[7]}")
                 except Exception as e:
                     print(f"  ✗ IK: {e}")
+                    p_desired = p_prev
 
     except KeyboardInterrupt:
         print("\n[Exit]")

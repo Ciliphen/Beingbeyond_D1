@@ -42,8 +42,7 @@ from beingbeyond_d1_sdk.dex_hand import DexHand
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 
-from block_grasp.ik_jacobian import jacobian_ik
-from block_grasp.ik_scipy import scipy_ik_multi_restart
+from block_grasp.ik_scipy import scipy_ik, scipy_ik_multi_restart
 
 from .config import (
     APPROACH_HEIGHT_OFFSET,
@@ -63,8 +62,13 @@ from .config import (
     GRASP_OK_MIN,
     GRASP_YAW_OFFSET_DEG,
     GRASP_Z_OFFSET,
+    ASIDE_POSITION,
+    GRAVITY_SAG_FACTOR,
     HAND_GRASP,
     HAND_OPEN,
+    PLACE_DISTANCE_THRESHOLD,
+    STACK_ENABLED,
+    STACK_POSITION,
     HEAD_PITCH_DEG,
     HEAD_YAW_DEG,
     IK_FAIL_THRESHOLD,
@@ -76,6 +80,7 @@ from .config import (
     IK_Z_WEIGHT,
     INTERP_STEP_SIZE,
     IOU_THRESHOLD,
+    JOINT_JUMP_THR_DEG,
     MAX_DXY,
     OBB_GRASP_RATIO,
     PLACE_POSITIONS,
@@ -313,6 +318,7 @@ class BlockGraspController:
         # ── State ───────────────────────────────────────────────────────
         self._busy = False
         self._step_count = 0
+        self._stack_count = 0  # blocks already stacked at STACK_POSITION
 
         # Workspace reference: current EE XY after startup (for clamping detections)
         T_start = self._kin.ee_in_base(q_head, q_arm)
@@ -322,6 +328,22 @@ class BlockGraspController:
         print("[Init] Ready.")
 
     # ── Perception helpers ─────────────────────────────────────────────────
+
+    def _get_table_z(self, x: float, y: float) -> float:
+        """Interpolate table Z at (x, y) from calibration points.
+
+        Uses inverse-distance-weighted average of the 3 nearest calibration
+        points, same as ``test_click_goto.py``.  Handles tilted tables.
+        """
+        if self._W is None or len(self._W) < 3:
+            return self._z_table
+        dists = np.sqrt((self._W[:, 0] - x) ** 2 + (self._W[:, 1] - y) ** 2)
+        idx = np.argsort(dists)[:3]
+        if dists[idx[0]] < 1e-6:
+            return float(self._W[idx[0], 2])
+        wgt = 1.0 / (dists[idx] + 0.001)
+        wgt /= wgt.sum()
+        return float(np.dot(wgt, self._W[idx, 2]))
 
     def detect_blocks(self, frame: np.ndarray) -> List[BlockDetection]:
         """Detect blocks in a colour frame and resolve to world coordinates.
@@ -350,18 +372,6 @@ class BlockGraspController:
         T_base_cam = self._kin.camera_in_base(q_head, q_arm)
         cx, cy, cz = T_base_cam[:3, 3]  # camera origin in base frame
 
-        # Height of the OBB-centre point above the table.
-        # The OBB encloses the full cube projection; its centre ≈ cube
-        # geometric centre (halfway up a 5 cm cube).
-        z_obj = self._z_table + BLOCK_SIZE / 2.0
-
-        # Perspective correction factor:
-        #   homography gives the intersection of the sight-line with the
-        #   table plane.  The cube sits *above* the table, so we walk back
-        #   along the ray from the table plane to the cube centre.
-        denom = self._z_table - cz  # ray z-component from camera to table
-        t_obj = (z_obj - cz) / denom if abs(denom) > 0.001 else 1.0
-
         # Scale factors: camera resolution → calibration resolution
         sx = CALIB_CAM_WIDTH / max(frame.shape[1], 1)
         sy = CALIB_CAM_HEIGHT / max(frame.shape[0], 1)
@@ -373,22 +383,27 @@ class BlockGraspController:
                 u, v, w, h, np.rad2deg(r), ratio=OBB_GRASP_RATIO,
             )
 
-            # Homography: pixel → table-plane XY
+            # Homography: pixel → table-plane XY (first pass)
             u_calib = u_bot * sx
             v_calib = v_bot * sy
             wx_hom, wy_hom = pixel_to_world_2d(u_calib, v_calib, self._H)
 
-            # Perspective correction: walk back along the sight ray from
-            # the table plane to the cube centre (same XY as bottom face).
-            wx = cx + (wx_hom - cx) * t_obj
-            wy = cy + (wy_hom - cy) * t_obj
+            # Interpolate table Z at this XY (handles tilted tables)
+            z_tbl = self._get_table_z(wx_hom, wy_hom)
+            z_obj = z_tbl + BLOCK_SIZE / 2.0
+            denom = z_tbl - cz
+            t_corr = (z_obj - cz) / denom if abs(denom) > 0.001 else 1.0
+
+            # Perspective correction with local table Z
+            wx = cx + (wx_hom - cx) * t_corr
+            wy = cy + (wy_hom - cy) * t_corr
 
             # Clamp to workspace
             wx = float(np.clip(wx, self._ws_x0 - MAX_DXY, self._ws_x0 + MAX_DXY))
             wy = float(np.clip(wy, self._ws_y0 - MAX_DXY, self._ws_y0 + MAX_DXY))
 
             # Z: top surface of cube on table
-            z_top = self._z_table + BLOCK_SIZE
+            z_top = z_tbl + BLOCK_SIZE
 
             grasp_angle_deg = estimate_grasp_angle_deg(
                 u, v, w, h, np.rad2deg(r)
@@ -413,6 +428,15 @@ class BlockGraspController:
         """Return current (q_head, q_arm) from the robot."""
         q_full = np.asarray(self._robot.get_positions(), dtype=float)
         return self._kin.split_q(q_full)
+
+    def _z_sag(self, x: float, y: float) -> float:
+        """Gravity-sag Z compensation at horizontal distance from base.
+
+        The arm droops under its own weight the further it reaches, so raise
+        the target Z to counteract it.  Cubic model (dz ∝ r³), same as teleop.
+        """
+        dist = math.sqrt(x * x + y * y)
+        return GRAVITY_SAG_FACTOR * dist ** 3
 
     def _make_target_pose(
         self,
@@ -444,7 +468,7 @@ class BlockGraspController:
         z_weight: float = IK_Z_WEIGHT,
         j6_offset_rad: float = 0.0,
     ) -> bool:
-        """Move EE to target pose using Jacobian IK with linear interpolation.
+        """Move EE to target pose using SLSQP IK with linear interpolation.
 
         *j6_offset_rad* is added to joint_6 after each IK step so the
         wrist rotates to the OBB angle without affecting position accuracy.
@@ -454,6 +478,10 @@ class BlockGraspController:
         q_head, q_arm = self._get_joint_state()
         T_cur = self._kin.ee_in_base(q_head, q_arm)
         p_start = T_cur[:3, 3].copy()
+        # Work in the *uncompensated* (nominal) frame: strip the sag already
+        # baked into the current pose so the per-step sag below never double-
+        # counts it (otherwise the EE lurches up at the start of each move).
+        p_start[2] -= self._z_sag(p_start[0], p_start[1])
         p_target = T_target[:3, 3]
         R_target = T_target[:3, :3]
 
@@ -463,23 +491,35 @@ class BlockGraspController:
         for i in range(n_steps):
             alpha = (i + 1) / n_steps
             interp = p_start + alpha * (p_target - p_start)
+            interp[2] += self._z_sag(interp[0], interp[1])   # gravity-sag comp
             T_step = np.eye(4)
             T_step[:3, :3] = R_target
             T_step[:3, 3] = interp
 
             try:
-                q_hs, q_as, err, it = jacobian_ik(
+                q_hs, q_as, err, it = scipy_ik(
                     self._kin, T_step, q_head, q_arm,
-                    z_weight=z_weight, max_iters=IK_MAX_ITERS,
-                    tol_pos=1e-4,
+                    z_weight=z_weight,
+                    pos_tol=IK_POS_TOL, tilt_tol_deg=IK_TILT_TOL_DEG,
+                    yaw_tol_deg=IK_YAW_TOL_DEG, max_iters=IK_MAX_ITERS,
                 )
                 if np.isnan(err) or err > IK_FAIL_THRESHOLD:
-                    print(f"  [IK] Jacobian fail at step {i}/{n_steps}: "
+                    print(f"  [IK] SLSQP fail at step {i}/{n_steps}: "
                           f"err={err:.3f}  target=({interp[0]:.3f},{interp[1]:.3f},{interp[2]:.3f})")
+                    return False
+
+                # Reject near-singularity joint jumps (excl. j6 wrist roll)
+                dq_max = float(np.max(np.abs(q_as[:5] - q_arm[:5])))
+                if dq_max > math.radians(JOINT_JUMP_THR_DEG):
+                    print(f"  [IK] joint jump {math.degrees(dq_max):.0f}° at step "
+                          f"{i}/{n_steps} (near singularity), aborting.")
                     return False
 
                 # Apply OBB yaw directly to joint_6 (wrist rotation)
                 q_as[5] += j6_offset_rad
+                # Normalise to shortest path from current joint_6
+                diff = q_as[5] - q_arm[5]
+                q_as[5] = q_arm[5] + (diff + math.pi) % (2 * math.pi) - math.pi
 
                 cmd = np.concatenate([q_hs, q_as])
                 cmd[0] = math.radians(HEAD_YAW_DEG)
@@ -507,6 +547,10 @@ class BlockGraspController:
         """
         q_head, q_arm = self._get_joint_state()
 
+        # Gravity-sag compensation on the target Z (copy: caller reuses T_target)
+        T_target = T_target.copy()
+        T_target[2, 3] += self._z_sag(T_target[0, 3], T_target[1, 3])
+
         try:
             q_hs, q_as, best_err, _ = scipy_ik_multi_restart(
                 self._kin, T_target, q_head, q_arm,
@@ -514,8 +558,17 @@ class BlockGraspController:
                 pos_tol=IK_POS_TOL, tilt_tol_deg=IK_TILT_TOL_DEG,
                 yaw_tol_deg=IK_YAW_TOL_DEG,
             )
+            # Reject near-singularity joint jumps (excl. j6 wrist roll)
+            dq_max = float(np.max(np.abs(q_as[:5] - q_arm[:5])))
+            if dq_max > math.radians(JOINT_JUMP_THR_DEG):
+                print(f"  [IK] refine joint jump {math.degrees(dq_max):.0f}° "
+                      f"(near singularity), not moving.")
+                return 999.0
             # Apply OBB yaw directly to joint_6 (wrist rotation)
             q_as[5] += j6_offset_rad
+            # Normalise to shortest path from current joint_6
+            diff = q_as[5] - q_arm[5]
+            q_as[5] = q_arm[5] + (diff + math.pi) % (2 * math.pi) - math.pi
 
             cmd = np.concatenate([q_hs, q_as])
             cmd[0] = math.radians(HEAD_YAW_DEG)
@@ -533,7 +586,7 @@ class BlockGraspController:
         refine: bool = True,
         j6_offset_rad: float = 0.0,
     ) -> bool:
-        """Move EE to target pose: interpolate with Jacobian, then refine with SLSQP.
+        """Move EE to target pose: SLSQP interpolation + multi-restart refinement.
 
         Args:
             T_target:      4×4 target pose in base frame.
@@ -580,11 +633,18 @@ class BlockGraspController:
 
         Returns True if grasp succeeded.
         """
-        z_grasp = self._z_table + GRASP_Z_OFFSET    # centre of cube
+        # Use local table Z (interpolated from calibration points)
+        z_tbl = self._get_table_z(block.x, block.y)
+        # Gravity-sag compensation is applied inside the motion primitives now
+        # (_interpolate_and_move / _refine_and_move), so target Z stays nominal.
+        z_grasp = z_tbl + GRASP_Z_OFFSET               # centre of cube
         z_approach = block.z + APPROACH_HEIGHT_OFFSET  # above top surface
 
-        # OBB angle → joint_6 offset (wrist rotation only)
-        j6_offset = math.radians(block.grasp_angle_deg + GRASP_YAW_OFFSET_DEG)
+        # OBB angle → joint_6 offset.  Cube has 90° symmetry, so pick
+        # the equivalent angle in [-45°, 45°] (smallest rotation).
+        raw_deg = block.grasp_angle_deg + GRASP_YAW_OFFSET_DEG
+        j6_deg = ((raw_deg + 45) % 90) - 45   # wrap to [-45°, 45°]
+        j6_offset = math.radians(j6_deg)
         gx = block.x + GRASP_OFFSET_X
         gy = block.y + GRASP_OFFSET_Y
 
@@ -599,7 +659,7 @@ class BlockGraspController:
               f"j6={math.degrees(j6_offset):.0f}°")
         T_approach = self._make_target_pose(gx, gy, z_approach)
         if not self._interpolate_and_move(T_approach, j6_offset_rad=j6_offset):
-            print("[Grasp] Jacobian approach failed, trying SLSQP ...")
+            print("[Grasp] SLSQP approach failed, trying multi-restart ...")
             err = self._refine_and_move(T_approach, j6_offset_rad=j6_offset)
             if err > 0.05:
                 print(f"[Grasp] SLSQP approach also failed (err={err:.3f}), aborting.")
@@ -676,6 +736,21 @@ class BlockGraspController:
 
         return True
 
+    # ── Move aside ─────────────────────────────────────────────────────────
+
+    def _move_aside(self) -> None:
+        """Park the arm to the side so it doesn't block the camera view.
+
+        Mirrors roboarm's ``default_gripper_aside_pos`` pattern.
+        """
+        ax, ay, az = ASIDE_POSITION
+        print(f"[Aside] Parking at ({ax:.3f}, {ay:.3f}, {az:.3f})")
+        try:
+            T_aside = self._make_target_pose(ax, ay, az)
+            self._interpolate_and_move(T_aside)
+        except Exception as e:
+            print(f"[Aside] Failed: {e}")
+
     # ── Main loop ──────────────────────────────────────────────────────────
 
     def run_loop(self) -> None:
@@ -686,6 +761,10 @@ class BlockGraspController:
         - **A** — toggle auto-grasp mode
         """
         mode_str = "AUTO" if self._auto_grasp else "MANUAL (press SPACE)"
+        if STACK_ENABLED:
+            mode_str += " | STACK"
+            sp = STACK_POSITION
+            print(f"  Stacking at ({sp[0]:.3f}, {sp[1]:.3f})")
         print("\n" + "=" * 60)
         print(f"  D1 Block Grasp — YOLO + Dexterous Hand  [{mode_str}]")
         print(f"  Table Z = {self._z_table:.3f} m  |  "
@@ -695,6 +774,8 @@ class BlockGraspController:
 
         window = "D1 Block Grasp" if not self._headless else None
         trigger_grasp = False
+        # Track status for each detected block: SKIP / OK / FAIL
+        block_status: dict = {}  # (cls_name, x, y) → status string
 
         try:
             while True:
@@ -706,36 +787,78 @@ class BlockGraspController:
                 # ── Detect (2D homography, no depth) ────────────────────
                 blocks = self.detect_blocks(rgb)
 
+                # ── Auto-detect stack height ──────────────────────────
+                if STACK_ENABLED:
+                    spx, spy = STACK_POSITION[:2]
+                    n_stacked = sum(
+                        1 for b in blocks
+                        if math.sqrt((b.x - spx) ** 2 + (b.y - spy) ** 2)
+                        <= PLACE_DISTANCE_THRESHOLD
+                    )
+                    if n_stacked > self._stack_count:
+                        self._stack_count = n_stacked
+                        print(f"[Stack] Auto-detected {n_stacked} blocks on tower")
+
                 # ── Act ────────────────────────────────────────────────
                 if not self._busy and blocks:
                     should_grasp = self._auto_grasp or trigger_grasp
                     trigger_grasp = False
 
                     if should_grasp:
+                        # Pick the first block NOT already at its target
+                        target = None
+                        target_place = None
+                        for b in blocks:
+                            if STACK_ENABLED:
+                                px, py = STACK_POSITION[:2]
+                                # Skip blocks already on the tower
+                                dist_to_stack = math.sqrt(
+                                    (b.x - px) ** 2 + (b.y - py) ** 2
+                                )
+                                if dist_to_stack <= PLACE_DISTANCE_THRESHOLD:
+                                    continue
+                                target = b
+                                pz = self._z_table + self._stack_count * BLOCK_SIZE + GRASP_Z_OFFSET
+                                target_place = (px, py, pz)
+                                break
+                            else:
+                                px, py = PLACE_POSITIONS.get(
+                                    b.class_name,
+                                    [b.x, b.y, DEFAULT_PLACE_Z],
+                                )[:2]
+                                dist_to_place = math.sqrt(
+                                    (b.x - px) ** 2 + (b.y - py) ** 2
+                                )
+                                if dist_to_place > PLACE_DISTANCE_THRESHOLD:
+                                    target = b
+                                    target_place = (px, py, self._z_table + GRASP_Z_OFFSET)
+                                    break
+
+                        if target is None:
+                            print("[Loop] All blocks already placed — done!")
+                            if self._auto_grasp:
+                                self._auto_grasp = False
+                            continue
+
                         self._busy = True
-                        target = blocks[0]
                         print(f"\n[Loop] Target: {target.class_name} "
                               f"({target.score:.2f}) @ "
                               f"({target.x:.3f}, {target.y:.3f}, {target.z:.3f})"
-                              f"  angle={target.grasp_angle_deg:.0f}°")
-
-                        place_name = target.class_name
-                        place_xyz = tuple(PLACE_POSITIONS.get(
-                            place_name,
-                            [target.x, target.y, DEFAULT_PLACE_Z],
-                        ))
-                        # Override place Z with computed height
-                        place_xyz = (
-                            place_xyz[0],
-                            place_xyz[1],
-                            self._z_table + GRASP_Z_OFFSET,
-                        )
+                              f"  → place ({target_place[0]:.3f}, {target_place[1]:.3f})")
 
                         try:
                             if self.grasp_block(target):
+                                block_status[(target.class_name, target.x, target.y)] = "OK"
                                 time.sleep(1.0)
-                                self.place_block(place_xyz)
+                                self.place_block(target_place)
+                                if STACK_ENABLED:
+                                    self._stack_count += 1
+                                    print(f"[Stack] {self._stack_count} blocks stacked")
+                                else:
+                                    # Move aside to clear camera view (not in stack mode)
+                                    self._move_aside()
                             else:
+                                block_status[(target.class_name, target.x, target.y)] = "FAIL"
                                 print("[Loop] Grasp failed, skipping place.")
                         except Exception as e:
                             print(f"[Loop] Error during grasp/place: {e}")

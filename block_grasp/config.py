@@ -33,7 +33,13 @@ BLOCK_SIZE: float = 0.05               # cube side length (m)
 # Negative = go below table surface. For a 5 cm cube, the hand needs to
 # wrap around the centre (~2.5 cm above table), but finger geometry means
 # the EE (wrist) must often go lower.  Start at 0 and tune downward.
-GRASP_Z_OFFSET: float = 0.0            # Z offset above table for grasp (m)
+GRASP_Z_OFFSET: float = 0.015          # Z offset above table for grasp (m)
+
+# ── Gravity sag compensation ───────────────────────────────────────────────
+# The arm sags under its own weight when extended.  dZ = factor × dist²
+# (cantilever model).  Positive = raise target to counteract sag.
+# Start at 0.02, increase if far blocks are still too low.
+GRAVITY_SAG_FACTOR: float = 0.3      # m of sag per m³ of horizontal distance
 
 # ── Motion ─────────────────────────────────────────────────────────────────
 Z_SAFE: float = 0.25                # safe Z height for approach / travel (m)
@@ -51,11 +57,18 @@ IK_MAX_ITERS: int = 200               # max SLSQP iterations
 IK_N_RESTARTS: int = 4                # multi-restart attempts
 IK_FAIL_THRESHOLD: float = 0.02       # max acceptable IK error for interpolated steps (m)
 
+# ── Near-singularity guard ──────────────────────────────────────────────────
+# Reject any IK solution that jumps an arm joint (excl. j6 wrist roll) more
+# than this in a single interpolation/teleop step — signals a near-singularity
+# or solution-branch switch that would make the EE lurch.  Shared by
+# grasp_controller and test_ee_teleop.
+JOINT_JUMP_THR_DEG: float = 20.0
+
 # ── Dexterous hand poses (6-D normalised [0, 1]; 0=open, 1=closed) ───────
 # Joint order: thumb_cmc_pitch, thumb_cmc_yaw, index_mcp_pitch,
 #              middle_mcp_pitch, ring_mcp_pitch, pinky_mcp_pitch
-HAND_OPEN: list[float] = [0.1, 0.1, 0.1, 0.1, 0.0, 0.0]
-HAND_GRASP: list[float] = [0.38, 0.33, 0.43, 0.43, 0.0, 0.0]   # ~4.2 cm grip
+HAND_OPEN: list[float] = [0.1, 0.8, 0.1, 0.1, 0.0, 0.0]         # thumb_yaw=0.8 always
+HAND_GRASP: list[float] = [0.35, 0.8, 0.40, 0.40, 0.0, 0.0]   # ~4.5 cm grip, thumb opposed
 HAND_CLOSE: list[float] = [0.7, 0.5, 0.8, 0.8, 0.8, 0.8]    # max tight
 
 # Grasp success: after closing to HAND_GRASP, the average finger position
@@ -68,17 +81,29 @@ GRASP_OK_MAX: float = 0.60   # above this = fully closed → nothing blocking
 # z = table_height + BLOCK_SIZE/2, so the cube sits on the table when released.
 # Tune these after measuring your actual table height!
 PLACE_POSITIONS: dict[str, list[float]] = {
-    "red_cube":    [0.25, 0.10, 0.105],
-    "blue_cube":   [0.25, -0.10, 0.105],
-    "green_cube":  [0.25, 0.00, 0.105],
-    "yellow_cube": [0.30, 0.00, 0.105],
+    "red_cube":    [0.20, 0.10, 0.105],    # 左前
+    "blue_cube":   [0.20, -0.10, 0.105],   # 右前
+    "green_cube":  [0.30, 0.10, 0.105],    # 左后
+    "yellow_cube": [0.30, -0.10, 0.105],   # 右后
 }
 DEFAULT_PLACE_Z: float = 0.105       # fallback place height: table + half cube
+
+# ── Stacking ──────────────────────────────────────────────────────────────
+# When enabled, all blocks are stacked at STACK_POSITION instead of
+# going to their per-class place positions.
+STACK_ENABLED: bool = True
+STACK_POSITION: list[float] = [0.25, 0.0, 0.105]  # tower base position
+
+# ── Classification ─────────────────────────────────────────────────────────
+# Distance below which a block is considered "already at target" → skip
+PLACE_DISTANCE_THRESHOLD: float = 0.05  # 5 cm
+# Arm parks here after placing to clear the camera view
+ASIDE_POSITION: list[float] = [0.20, 0.0, 0.25]  # base-frame x, y, z
 
 # ── Grasp position offset (world XY, metres) ──────────────────────────────
 # Fine-tune the grasp point relative to the detected bottom-face centre.
 GRASP_OFFSET_X: float = 0.0     # +X = forward (away from robot base)
-GRASP_OFFSET_Y: float = -0.025   # +Y = left, -Y = right (2.5 cm right)
+GRASP_OFFSET_Y: float = 0.0      # +Y = left, -Y = right
 
 # ── Grasp yaw compensation ────────────────────────────────────────────────
 # The OBB angle is perpendicular to the long edge.  The thumb sits on the
