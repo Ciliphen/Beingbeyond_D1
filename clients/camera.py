@@ -15,7 +15,7 @@ Image data is returned as numpy arrays.  Consumers (e.g. VLA policy)
 can encode as needed for their transport.
 
 Usage:
-    from camera.d1_camera_primitive import D1CameraPrimitive
+    from clients.camera import D1CameraPrimitive
 
     cam = D1CameraPrimitive(width=640, height=480, fps=30)
     info = cam.info()

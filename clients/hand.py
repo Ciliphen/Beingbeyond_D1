@@ -16,7 +16,7 @@ All joint-position arrays are variable-length float in [0, 1] (0=open, 1=closed)
 Joint order is self-describing via info().joint_names.
 
 Usage:
-    from hand.d1_hand_primitive import D1HandPrimitive
+    from clients.hand import D1HandPrimitive
 
     hand = D1HandPrimitive(hand_type="right", can_iface="can0")
     info = hand.info()

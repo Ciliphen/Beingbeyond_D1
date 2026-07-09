@@ -77,8 +77,14 @@ ENV/
 env.bak/
 venv.bak/
 
-todo.txt*.pt
+todo.txt
 object_detect/runs/
 *.pt
 dataset/
 runs/
+
+# Calibration artifacts (generated locally)
+block_grasp/handeye_calib.npz
+
+# Local dataset config (use data.yaml.example as template)
+object_detect/data.yaml

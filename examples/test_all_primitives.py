@@ -36,9 +36,9 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from arm.d1_arm_primitive import D1ArmPrimitive
-from camera.d1_camera_primitive import D1CameraPrimitive
-from hand.d1_hand_primitive import D1HandPrimitive
+from clients.arm import D1ArmPrimitive
+from clients.camera import D1CameraPrimitive
+from clients.hand import D1HandPrimitive
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 配置 — 根据实际接线修改

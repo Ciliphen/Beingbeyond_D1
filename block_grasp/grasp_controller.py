@@ -31,7 +31,7 @@ from scipy.spatial.transform import Rotation as R
 # Project paths — allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from camera.d1_camera_primitive import D1CameraPrimitive
+from clients.camera import D1CameraPrimitive
 from object_detect.detect import (
     detect_objects_in_frame,
     draw_box,

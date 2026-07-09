@@ -16,7 +16,7 @@ this primitive — they will get their own primitive later.
 All joint-position arrays are float64 in radians (absolute position control).
 
 Usage:
-    from arm.d1_arm_primitive import D1ArmPrimitive
+    from clients.arm import D1ArmPrimitive
 
     arm = D1ArmPrimitive(dev="/dev/ttyUSB0")
     info = arm.info()

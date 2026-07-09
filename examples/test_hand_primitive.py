@@ -23,7 +23,7 @@ import os
 # Allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hand.d1_hand_primitive import D1HandPrimitive
+from clients.hand import D1HandPrimitive
 
 
 def main():

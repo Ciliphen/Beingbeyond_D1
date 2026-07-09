@@ -16,7 +16,7 @@ import cv2, numpy as np
 from scipy.spatial.transform import Rotation as R
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from camera.d1_camera_primitive import D1CameraPrimitive
+from clients.camera import D1CameraPrimitive
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
