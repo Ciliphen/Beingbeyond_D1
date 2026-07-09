@@ -21,8 +21,7 @@ from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
-from block_grasp.ik_jacobian import jacobian_ik, jacobian_ik_multi_restart
-from block_grasp.ik_scipy import scipy_ik_multi_restart
+from block_grasp.ik_scipy import scipy_ik, scipy_ik_multi_restart
 
 CALIB = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
 
@@ -194,7 +193,7 @@ def main():
                 dist = np.linalg.norm(p_target - p_start)
                 n_steps = max(1, int(dist / 0.005))
 
-                # ── Interpolated movement with Jacobian IK ──────────────
+                # ── Interpolated movement with SLSQP IK ─────────────────
                 R_cur = kin.ee_in_base(q_head, q_arm)[:3, :3]
                 ik_ok = True
                 for i in range(n_steps):
@@ -204,10 +203,11 @@ def main():
                     T_tgt[:3, :3] = R_cur
                     T_tgt[:3, 3] = interp
                     try:
-                        # Single-restart Jacobian IK (small step, fast)
-                        q_hs, q_as, err, it = jacobian_ik(
+                        # Single-shot SLSQP IK (small step, fast)
+                        q_hs, q_as, err, it = scipy_ik(
                             kin, T_tgt, q_head, q_arm,
-                            z_weight=3.0, max_iters=200, tol_pos=1e-4)
+                            z_weight=3.0, max_iters=200,
+                            pos_tol=0.005, tilt_tol_deg=5, yaw_tol_deg=10)
                         if np.isnan(err) or err > 0.02:
                             if i == 0:
                                 print(f"  ⚠ IK fail at step 0: err={err:.3f}")
