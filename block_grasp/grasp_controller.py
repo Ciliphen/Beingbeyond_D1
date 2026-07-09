@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -151,6 +152,7 @@ class BlockGraspController:
         device: str = "",
         headless: bool = False,
         auto_grasp: bool = False,
+        show_depth: bool = True,
     ) -> None:
         """Initialise all hardware, models, and kinematics.
 
@@ -168,9 +170,11 @@ class BlockGraspController:
             headless:   If True, skip OpenCV display windows.
             auto_grasp: If True, automatically grasp detected blocks.
                         If False, press SPACE to trigger grasp.
+            show_depth: If True, show/save the colourised depth view.
         """
         self._headless = headless
         self._auto_grasp = auto_grasp
+        self._show_depth = show_depth
 
         # ── URDF path ────────────────────────────────────────────────────
         if not urdf_path:
@@ -319,6 +323,9 @@ class BlockGraspController:
         self._busy = False
         self._step_count = 0
         self._stack_count = 0  # blocks already stacked at STACK_POSITION
+        # Background grasp thread + per-block status (SKIP / OK / FAIL)
+        self._grasp_thread: Optional[threading.Thread] = None
+        self._block_status: dict = {}
 
         # Workspace reference: current EE XY after startup (for clamping detections)
         T_start = self._kin.ee_in_base(q_head, q_arm)
@@ -328,6 +335,33 @@ class BlockGraspController:
         print("[Init] Ready.")
 
     # ── Perception helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _colorize_depth(
+        depth: np.ndarray,
+        z_min: float = 0.2,
+        z_max: float = 1.5,
+    ) -> np.ndarray:
+        """Convert a metric depth map (float32, metres) to a JET-coloured image.
+
+        Depth is clipped to ``[z_min, z_max]`` and normalised so near objects
+        are red and far objects are blue.  Invalid pixels (0 / NaN) render black.
+
+        Args:
+            depth: Depth image (H, W) in metres.
+            z_min: Near clip distance (metres).
+            z_max: Far clip distance (metres).
+
+        Returns:
+            BGR uint8 image (H, W, 3) suitable for ``cv2.imshow``.
+        """
+        d = np.nan_to_num(depth, nan=0.0)
+        valid = d > 0
+        norm = np.clip((d - z_min) / max(z_max - z_min, 1e-6), 0.0, 1.0)
+        norm_u8 = (norm * 255).astype(np.uint8)
+        colored = cv2.applyColorMap(norm_u8, cv2.COLORMAP_JET)
+        colored[~valid] = 0  # black out pixels with no depth
+        return colored
 
     def _get_table_z(self, x: float, y: float) -> float:
         """Interpolate table Z at (x, y) from calibration points.
@@ -754,6 +788,42 @@ class BlockGraspController:
         except Exception as e:
             print(f"[Aside] Failed: {e}")
 
+    # ── Background grasp worker ─────────────────────────────────────────────
+
+    def _grasp_and_place_worker(
+        self,
+        target: BlockDetection,
+        target_place: Tuple[float, float, float],
+    ) -> None:
+        """Run the full grasp+place sequence off the main thread.
+
+        The main loop keeps capturing and displaying camera frames while this
+        runs.  Only this thread touches the arm; the main thread must not read
+        robot state while ``self._busy`` is True (serial-port contention).
+
+        ``self._busy`` is set by the caller before the thread starts and is
+        cleared here when the sequence finishes.
+        """
+        key = (target.class_name, target.x, target.y)
+        try:
+            if self.grasp_block(target):
+                self._block_status[key] = "OK"
+                time.sleep(1.0)
+                self.place_block(target_place)
+                if STACK_ENABLED:
+                    self._stack_count += 1
+                    print(f"[Stack] {self._stack_count} blocks stacked")
+                else:
+                    # Move aside to clear camera view (not in stack mode)
+                    self._move_aside()
+            else:
+                self._block_status[key] = "FAIL"
+                print("[Loop] Grasp failed, skipping place.")
+        except Exception as e:
+            print(f"[Loop] Error during grasp/place: {e}")
+        finally:
+            self._busy = False
+
     # ── Main loop ──────────────────────────────────────────────────────────
 
     def run_loop(self) -> None:
@@ -776,31 +846,38 @@ class BlockGraspController:
         print("=" * 60 + "\n")
 
         window = "D1 Block Grasp" if not self._headless else None
+        depth_window = "D1 Depth" if (not self._headless and self._show_depth) else None
         trigger_grasp = False
-        # Track status for each detected block: SKIP / OK / FAIL
-        block_status: dict = {}  # (cls_name, x, y) → status string
 
         try:
             while True:
                 t0 = time.time()
 
-                # ── Capture (RGB only, no depth) ────────────────────────
-                rgb = self._camera.snapshot(filtered=False)
+                # ── Capture (RGB + depth) ───────────────────────────────
+                # Grasping uses 2D homography and ignores depth; depth is
+                # captured only for the visualisation window below.
+                rgb, depth = self._camera.rgbd(filtered=False)
 
-                # ── Detect (2D homography, no depth) ────────────────────
-                blocks = self.detect_blocks(rgb)
+                # While a grasp is running in the background thread, the main
+                # thread must NOT touch the robot (detection reads the arm pose
+                # → serial-port contention).  Skip detection & acting; keep
+                # capturing/displaying frames so the window stays live.
+                blocks: List[BlockDetection] = []
+                if not self._busy:
+                    # ── Detect (2D homography, no depth) ────────────────
+                    blocks = self.detect_blocks(rgb)
 
-                # ── Auto-detect stack height ──────────────────────────
-                if STACK_ENABLED:
-                    spx, spy = STACK_POSITION[:2]
-                    n_stacked = sum(
-                        1 for b in blocks
-                        if math.sqrt((b.x - spx) ** 2 + (b.y - spy) ** 2)
-                        <= PLACE_DISTANCE_THRESHOLD
-                    )
-                    if n_stacked > self._stack_count:
-                        self._stack_count = n_stacked
-                        print(f"[Stack] Auto-detected {n_stacked} blocks on tower")
+                    # ── Auto-detect stack height ────────────────────────
+                    if STACK_ENABLED:
+                        spx, spy = STACK_POSITION[:2]
+                        n_stacked = sum(
+                            1 for b in blocks
+                            if math.sqrt((b.x - spx) ** 2 + (b.y - spy) ** 2)
+                            <= PLACE_DISTANCE_THRESHOLD
+                        )
+                        if n_stacked > self._stack_count:
+                            self._stack_count = n_stacked
+                            print(f"[Stack] Auto-detected {n_stacked} blocks on tower")
 
                 # ── Act ────────────────────────────────────────────────
                 if not self._busy and blocks:
@@ -843,30 +920,19 @@ class BlockGraspController:
                                 self._auto_grasp = False
                             continue
 
+                        # Launch grasp+place on a background thread so the
+                        # camera windows keep refreshing during the motion.
                         self._busy = True
                         print(f"\n[Loop] Target: {target.class_name} "
                               f"({target.score:.2f}) @ "
                               f"({target.x:.3f}, {target.y:.3f}, {target.z:.3f})"
                               f"  → place ({target_place[0]:.3f}, {target_place[1]:.3f})")
-
-                        try:
-                            if self.grasp_block(target):
-                                block_status[(target.class_name, target.x, target.y)] = "OK"
-                                time.sleep(1.0)
-                                self.place_block(target_place)
-                                if STACK_ENABLED:
-                                    self._stack_count += 1
-                                    print(f"[Stack] {self._stack_count} blocks stacked")
-                                else:
-                                    # Move aside to clear camera view (not in stack mode)
-                                    self._move_aside()
-                            else:
-                                block_status[(target.class_name, target.x, target.y)] = "FAIL"
-                                print("[Loop] Grasp failed, skipping place.")
-                        except Exception as e:
-                            print(f"[Loop] Error during grasp/place: {e}")
-                        finally:
-                            self._busy = False
+                        self._grasp_thread = threading.Thread(
+                            target=self._grasp_and_place_worker,
+                            args=(target, target_place),
+                            daemon=True,
+                        )
+                        self._grasp_thread.start()
 
                 # ── Visualise ──────────────────────────────────────────
                 vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -896,22 +962,33 @@ class BlockGraspController:
                             (10, 65), cv2.FONT_HERSHEY_SIMPLEX,
                             0.9, (0, 255, 255), 2)
 
-                # Show EE position
-                try:
-                    qh, qa = self._get_joint_state()
-                    Tee = self._kin.ee_in_base(qh, qa)
-                    ex, ey, ez = Tee[0, 3], Tee[1, 3], Tee[2, 3]
-                    cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})",
-                                (10, 100), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.8, (255, 200, 0), 2)
-                except Exception:
-                    pass
+                # Show EE position (skip while busy — reading the arm pose
+                # would contend with the grasp thread on the serial port)
+                if not self._busy:
+                    try:
+                        qh, qa = self._get_joint_state()
+                        Tee = self._kin.ee_in_base(qh, qa)
+                        ex, ey, ez = Tee[0, 3], Tee[1, 3], Tee[2, 3]
+                        cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})",
+                                    (10, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8, (255, 200, 0), 2)
+                    except Exception:
+                        pass
+
+                # Colourise depth (metres → JET) for display
+                depth_vis = (
+                    self._colorize_depth(depth) if self._show_depth else None
+                )
 
                 if self._headless:
                     if self._step_count % 30 == 0:
                         cv2.imwrite("/tmp/d1_block_grasp.jpg", vis)
+                        if self._show_depth:
+                            cv2.imwrite("/tmp/d1_block_depth.jpg", depth_vis)
                 else:
                     cv2.imshow(window, vis)
+                    if self._show_depth:
+                        cv2.imshow(depth_window, depth_vis)
                     key = cv2.waitKey(1) & 0xFF
                     if key == 27 or key in (ord('q'), ord('Q')):
                         break
@@ -928,6 +1005,11 @@ class BlockGraspController:
         except KeyboardInterrupt:
             print("\n[Loop] Interrupted by user.")
         finally:
+            # Let any in-progress grasp finish before closing hardware, so the
+            # worker thread isn't touching the arm while we shut it down.
+            if self._grasp_thread is not None and self._grasp_thread.is_alive():
+                print("[Loop] Waiting for in-progress grasp to finish ...")
+                self._grasp_thread.join()
             self._shutdown()
 
     def _shutdown(self) -> None:

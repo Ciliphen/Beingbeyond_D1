@@ -116,6 +116,13 @@ def main() -> None:
         help="Run without OpenCV display windows",
     )
     parser.add_argument(
+        "--show-depth",
+        dest="show_depth",
+        action="store_true",
+        default=False,
+        help="Show the colourised depth window (hidden by default)",
+    )
+    parser.add_argument(
         "--auto",
         dest="auto_grasp",
         action="store_true",
@@ -139,6 +146,7 @@ def main() -> None:
         device=args.device,
         headless=args.headless,
         auto_grasp=args.auto_grasp,
+        show_depth=args.show_depth,
     )
 
     try:
