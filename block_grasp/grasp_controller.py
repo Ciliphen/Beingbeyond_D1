@@ -44,7 +44,7 @@ from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 
 from block_grasp.ik_scipy import scipy_ik, scipy_ik_multi_restart
 
-from .config import (
+from block_grasp.config import (
     APPROACH_HEIGHT_OFFSET,
     BLOCK_SIZE,
     CALIB_CAM_HEIGHT,
@@ -86,7 +86,7 @@ from .config import (
     PLACE_POSITIONS,
     Z_SAFE,
 )
-from .coordinate_utils import (
+from block_grasp.coordinate_utils import (
     estimate_grasp_angle_deg,
     obb_bottom_center,
     pixel_to_world_2d,
@@ -362,8 +362,11 @@ class BlockGraspController:
         Returns:
             List of resolved ``BlockDetection``, sorted by score descending.
         """
+        # 相机输出 RGB，但模型在 BGR 训练数据上训练，推理前需转 BGR
+        # （否则颜色分类错误，与 test_detect_fixed.py 保持一致）
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         detections = detect_objects_in_frame(
-            self._model, frame, conf_thres=CONF_THRESHOLD, iou_thres=IOU_THRESHOLD
+            self._model, frame_bgr, conf_thres=CONF_THRESHOLD, iou_thres=IOU_THRESHOLD
         )
 
         # Camera position in base frame (for perspective correction)
