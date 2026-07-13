@@ -13,7 +13,8 @@ Mirrors roboarm's ``chess/catch_and_place.py`` + ``arm/arm_base.py``.
 
 Uses **2D homography** (``pixel2pos``) for pixel→world transform — same as
 roboarm, reusing the existing ``handeye_calib.npz``.  No depth camera needed.
-Custom IK solvers (Jacobian + SLSQP) for Z-plane consistency.
+Inverse kinematics is solved by ``ik_scipy`` (SLSQP), the only production
+solver.
 """
 from __future__ import annotations
 
@@ -704,7 +705,7 @@ class BlockGraspController:
         self._hand_open()
         time.sleep(CATCH_DELAY_S)
 
-        # ── ② Approach from above (Jacobian + SLSQP fallback) ───────────
+        # ── ② Approach from above (SLSQP interp, multi-restart fallback) ─
         print(f"[Grasp] Approaching above {block.class_name} at "
               f"({gx:.3f}, {gy:.3f}, {z_approach:.3f})  "
               f"j6={math.degrees(j6_offset):.0f}°")
@@ -844,8 +845,9 @@ class BlockGraspController:
         """Run the perception–action loop.
 
         - **SPACE** — trigger a single grasp+place cycle (manual mode)
-        - **ESC / Q** — exit
         - **A** — toggle auto-grasp mode
+        - **R** — reset stacking state
+        - **ESC / Q** — exit
         """
         mode_str = "AUTO" if self._auto_grasp else "MANUAL (press SPACE)"
         if STACK_ENABLED:

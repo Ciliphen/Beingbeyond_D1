@@ -62,6 +62,17 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | `--hand-type {right,left}` | 灵巧手左右手，默认 `right` |
 | `--hand-can IFACE` | 灵巧手 CAN 接口，默认 `can0` |
 
+运行时窗口内按键：
+
+| 按键 | 作用 |
+| --- | --- |
+| `SPACE` | 触发一次抓取（手动模式） |
+| `A` | 切换自动 / 手动 |
+| `R` | 重置堆叠状态 |
+| `ESC` / `Q` | 退出 |
+
+**堆叠模式**（`STACK_ENABLED=True`，默认开）：检测到 ≥2 个方块时，以离 `STACK_POSITION` 最近的方块为底座，把另一个方块叠到其正上方，完成后停止；按 `R` 可重置重来。
+
 > ⚠️ **安全**：真机操作前请确认急停按钮在手边；机械臂会实际运动，注意工作范围内无人无障碍；首次运行建议低速、留足空间观察。
 
 ## 标定
@@ -81,25 +92,29 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 
 | 参数 | 默认 | 含义 |
 | --- | --- | --- |
-| `CAM_WIDTH/HEIGHT/FPS` | 1280 / 720 / 30 | 相机分辨率与帧率 |
-| `HEAD_LOOK_DOWN_DEG` | `[0.0, 60.0]` | 相机俯视时的头部 `[yaw, pitch]`（度） |
+| `CAM_WIDTH/HEIGHT/FPS` | 1280 / 720 / 30 | 相机分辨率与帧率（命令行参数） |
+| `HEAD_YAW_DEG / HEAD_PITCH_DEG` | -10.0 / 35.0 | 相机俯视时的头部 yaw / pitch（度），须与手眼标定时一致 |
 | `CONF_THRESHOLD` | 0.85 | YOLO 检测置信度阈值 |
 | `IOU_THRESHOLD` | 0.45 | NMS 的 IoU 阈值 |
 | `BLOCK_SIZE` | 0.05 | 方块边长（m） |
 | `GRASP_Z_OFFSET` | 0.015 | 抓取相对桌面的 Z 偏移（m），需按手指几何调 |
-| `GRAVITY_SAG_FACTOR` | 0.0 | 下垂补偿系数（由 `calibrate_sag.py` 设置） |
-| `IK_POS_WEIGHT` / `IK_Z_WEIGHT` | 1.0 / 3.0 | IK 位置误差权重 / Z 轴额外权重 |
-| `IK_MAX_ITER` | 200 | scipy IK 最大迭代次数 |
-| `JOINT_JUMP_THR_DEG` | 45.0 | 相邻步单关节最大跳变（度），超限视为异常 |
-| `GRASP_HALF_OPEN / CLOSED / OPEN` | 0.3 / 0.8 / 0.0 | 手部半开 / 闭合 / 全开位置（归一化 [0,1]，0=开 1=闭） |
+| `GRAVITY_SAG_FACTOR` | 0.3 | 下垂补偿系数（由 `calibrate_sag.py` 标定写回） |
+| `INTERP_STEP_SIZE` | 0.025 | 笛卡尔插值步长（m），越大移动越快、轨迹越粗 |
+| `CATCH_DELAY_S` | 0.8 | 手部开合后的等待（CAN 总线延时，s） |
+| `IK_Z_WEIGHT` | 3.0 | IK 中 Z 轴额外权重（>1 = 优先保证高度） |
+| `IK_POS_TOL` | 0.005 | IK 位置容差（m） |
+| `IK_MAX_ITERS` | 200 | scipy SLSQP 最大迭代次数 |
+| `IK_N_RESTARTS` | 4 | 末端精定位多起点重启次数 |
+| `JOINT_JUMP_THR_DEG` | 20.0 | 相邻步单关节最大跳变（度），超限视为近奇异 |
+| `HAND_OPEN / HAND_GRASP / HAND_CLOSE` | 见 `config.py` | 手部张开 / 抓取 / 闭合的 6 指位置（归一化 [0,1]，0=开 1=闭） |
+| `STACK_ENABLED` | True | 堆叠模式：把一个方块叠到另一个上（否则按类别摆放） |
+| `STACK_POSITION` | `[0.25, 0.0, 0.105]` | 选底座的参考点：离它最近的方块作为底座 |
 
 ## IK 说明
 
-生产抓取使用 **`ik_scipy`**（`scipy.optimize` 优化式）：鲁棒（多初值重启）、支持关节限位、可放松末端绕轴 roll（tilt-yaw 降维）以提高求解成功率，代价是较慢——抓取为低频场景，可接受。
+抓取使用 **`ik_scipy`**（`scipy.optimize` SLSQP 优化式）：鲁棒（多初值重启）、支持关节限位、把姿态误差分解为 tilt / yaw 并可放松 yaw 权重以提高求解成功率。移动采用笛卡尔直线插值，每步求解并做重力下垂补偿，末端再做一次多起点精定位；每段移动结束都会等待机械臂真正到位，避免读到滞后位姿。
 
-`ik_jacobian`（自研雅可比迭代）快但对初值/奇异点敏感、限位不好处理，目前仅调试脚本使用，未进生产。
-
-> 说明：`beingbeyond_d1_sdk.pin_kinematics.D1Kinematics` 在本模块中只用于正运动学（`fk`）与雅可比（`jacobian`），逆解由 `ik_scipy` 完成。
+> 说明：`beingbeyond_d1_sdk.pin_kinematics.D1Kinematics` 在本模块中用于正运动学（`fk`），逆解由 `ik_scipy` 完成。
 
 ## 脚本一览
 
@@ -108,7 +123,7 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | 文件 | 作用 |
 | --- | --- |
 | `run_block_grasp.py` | 入口脚本，解析参数、加载模型、驱动 `BlockGraspController`。 |
-| `grasp_controller.py` | 抓取控制器（核心，~960 行）。`BlockGraspController` 编排检测→坐标转换→IK→手部动作；`BlockDetection` 描述单个检测结果。 |
+| `grasp_controller.py` | 抓取控制器（核心，~1060 行）。`BlockGraspController` 编排检测→坐标转换→IK→手部动作；`BlockDetection` 描述单个检测结果。 |
 | `config.py` | 抓取配置常量（见上）。 |
 | `coordinate_utils.py` | 坐标换算：像素 ↔ 3D。`pixel_to_camera_3d`、`camera_to_base_3d`、`pixel_to_world_2d`、`obb_bottom_center`、`estimate_grasp_angle_deg`。 |
 | `__init__.py` | 包初始化与模块说明。 |
@@ -117,8 +132,7 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 
 | 文件 | 作用 |
 | --- | --- |
-| `ik_scipy.py` | scipy 优化式 IK（**生产使用**）。`scipy_ik`、`scipy_ik_multi_restart`。 |
-| `ik_jacobian.py` | 自研雅可比 IK（6-DOF）。`jacobian_ik`、`jacobian_ik_multi_restart`。仅调试使用。 |
+| `ik_scipy.py` | scipy SLSQP 优化式 IK（唯一生产求解器）。`scipy_ik`、`scipy_ik_multi_restart`。 |
 
 ### 标定
 
@@ -133,7 +147,8 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 
 | 文件 | 作用 |
 | --- | --- |
-| `test_click_goto.py` | 点击图像 → 机械臂把指尖移到该位置（用到雅可比与 scipy 两种 IK）。 |
+| `test_click_goto.py` | 点击图像 → 机械臂把指尖移到该位置（scipy IK）。 |
+| `test_calib.py` | 点击图像 → 打印该像素经单应算出的世界坐标（先把头设到标定姿态），验证标定是否正确。 |
 | `test_detect_fixed.py` | 相机 + 头部控制 + YOLO 检测 + 数据采集（BGR 修正版）。 |
 | `test_detect_image.py` | 离线检测：对现有图片跑 YOLO OBB，圈出方块并标注颜色。 |
 | `test_ee_teleop.py` | 简易末端遥操：手掌朝下，WASD 沿桌面平移（键盘控制）。 |
@@ -144,7 +159,7 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | 现象 | 排查方向 |
 | --- | --- |
 | 检测不到方块 | 确认 YOLO 权重路径正确、光照充足；调低 `CONF_THRESHOLD` |
-| 抓取位置整体偏移 | 重做 `calibrate_handeye.py`；检查头部姿态是否为 `HEAD_LOOK_DOWN_DEG` |
+| 抓取位置整体偏移 | 重做 `calibrate_handeye.py`；检查头部姿态是否为 `HEAD_YAW_DEG` / `HEAD_PITCH_DEG` |
 | 抓取偏高/偏低 | 调 `GRASP_Z_OFFSET`；远处偏低可启用 `calibrate_sag.py` 的下垂补偿 |
 | IK 报无解 / 不动 | 目标可能超出工作空间或关节限位；换抓取角度或把物体挪近 |
 | 关节突然大幅跳动被拦截 | 触发 `JOINT_JUMP_THR_DEG` 保护，检查 IK 解是否连续 |
