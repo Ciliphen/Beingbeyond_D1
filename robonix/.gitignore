@@ -1,2 +1,5 @@
-rbnx-boot/
 rbnx-build/
+rbnx-boot/
+logs/
+__pycache__/
+*.pyc

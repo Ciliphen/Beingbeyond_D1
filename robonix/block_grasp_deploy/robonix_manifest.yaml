@@ -12,10 +12,20 @@ system:
   pilot:
     listen: 127.0.0.1:50071
     vlm:
-      upstream: ${VLM_BASE_URL}
+      upstream: https://api.deepseek.com
       api_key: ${VLM_API_KEY}
-      model: ${VLM_MODEL}
+      model: deepseek-v4-flash
       api_format: openai
+  liaison:
+    listen: 127.0.0.1:50081
+    log: info
+
+# soma_d1 — D1 body model (fixed-base arm, no chassis). Boots before the
+# skill so any consumer can query the body model. Provided as a service
+# package (kind=service) rather than a built-in system component.
+service:
+  - name: soma
+    path: ../soma_d1
 
 skill:
   - name: block_grasp

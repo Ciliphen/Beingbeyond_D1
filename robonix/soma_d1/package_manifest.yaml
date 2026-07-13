@@ -1,0 +1,21 @@
+manifestVersion: 1
+
+build: bash scripts/build.sh
+
+start: bash scripts/start.sh
+
+package:
+  name: com.beingbeyond.system.soma_d1
+  version: 0.1.0
+  vendor: beingbeyond
+  description: Soma (body model) provider for the Beingbeyond D1 fixed-base arm
+  license: MulanPSL-2.0
+
+# The three soma contracts are defined globally in robonix's capabilities/;
+# this package implements them (over gRPC), so no local capabilities/ needed.
+capabilities:
+  - name: robonix/system/soma/description
+  - name: robonix/system/soma/footprint
+  - name: robonix/system/soma/sensor_extrinsics
+
+depends: []
