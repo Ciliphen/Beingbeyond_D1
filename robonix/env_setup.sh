@@ -34,9 +34,10 @@ echo "[env_setup] installing robonix skill deps"
 
 echo "[env_setup] verifying imports"
 "${ENV_PY}" - <<'PY'
+import importlib.util
 mods = ["beingbeyond_d1_sdk", "pyrealsense2", "ultralytics", "cv2", "scipy",
         "mcp", "fastmcp", "grpc", "grpc_tools"]
-missing = [m for m in mods if __import__("importlib.util", fromlist=["util"]).util.find_spec(m) is None]
+missing = [m for m in mods if importlib.util.find_spec(m) is None]
 print("missing:", missing or "none")
 raise SystemExit(1 if missing else 0)
 PY
