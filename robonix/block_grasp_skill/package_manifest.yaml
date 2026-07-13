@@ -1,0 +1,18 @@
+manifestVersion: 1
+
+build: bash scripts/build.sh
+
+start: bash scripts/start.sh
+
+package:
+  name: com.beingbeyond.skill.block_grasp
+  version: 0.1.0
+  vendor: beingbeyond
+  description: YOLO-OBB detection + D1 dexterous-hand block grasping skill
+  license: MulanPSL-2.0
+
+# MCP tools are declared at runtime via skill.declare_mcp (see node.py),
+# so no contract files are referenced here — same as roboarm_skill.
+capabilities: []
+
+depends: []

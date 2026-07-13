@@ -788,6 +788,123 @@ class BlockGraspController:
 
         return True
 
+    # ── Target selection (shared by run_loop and the headless skill API) ────
+
+    def _select_stack_targets(
+        self, blocks: List[BlockDetection]
+    ) -> Optional[Tuple[BlockDetection, Tuple[float, float, float]]]:
+        """Pick ``(mover, place_xyz)`` for two-block stacking, or ``None``.
+
+        Base = block closest to ``STACK_POSITION``; mover = the remaining
+        block nearest the base; place one block-height above the base.
+        Returns ``None`` if stacking already completed or fewer than two
+        blocks are present.
+        """
+        if self._stacked or len(blocks) < 2:
+            return None
+        spx, spy = STACK_POSITION[:2]
+        base = min(blocks, key=lambda b: math.hypot(b.x - spx, b.y - spy))
+        others = [b for b in blocks if b is not base]
+        mover = min(others, key=lambda b: math.hypot(b.x - base.x, b.y - base.y))
+        pz = self._z_table + BLOCK_SIZE + GRASP_Z_OFFSET
+        return mover, (base.x, base.y, pz)
+
+    def _select_place_target(
+        self,
+        blocks: List[BlockDetection],
+        class_name: Optional[str] = None,
+    ) -> Optional[Tuple[BlockDetection, Tuple[float, float, float]]]:
+        """Pick ``(block, place_xyz)`` for the first block not yet at its
+        class place position, or ``None``. If *class_name* is given, only
+        blocks of that class are considered.
+        """
+        for b in blocks:
+            if class_name and b.class_name != class_name:
+                continue
+            px, py = PLACE_POSITIONS.get(
+                b.class_name, [b.x, b.y, DEFAULT_PLACE_Z]
+            )[:2]
+            if math.hypot(b.x - px, b.y - py) > PLACE_DISTANCE_THRESHOLD:
+                return b, (px, py, self._z_table + GRASP_Z_OFFSET)
+        return None
+
+    # ── Headless single-shot actions (used by the robonix skill) ────────────
+
+    def grasp_once(
+        self, class_name: Optional[str] = None
+    ) -> Dict[str, object]:
+        """Detect once, grasp the first block not yet at its place position
+        (optionally filtered to *class_name*), and place it there.
+
+        Synchronous and headless — no OpenCV window, no background thread.
+        The caller must ensure nothing else drives the arm concurrently.
+        Returns a JSON-serialisable result dict.
+        """
+        rgb, _ = self._camera.rgbd(filtered=False)
+        blocks = self.detect_blocks(rgb)
+        if not blocks:
+            return {"ok": False, "detected": 0, "grasped": False,
+                    "message": "no blocks detected"}
+        sel = self._select_place_target(blocks, class_name)
+        if sel is None:
+            msg = (f"no '{class_name}' block available to grasp"
+                   if class_name
+                   else "all detected blocks already at their place positions")
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "message": msg}
+        block, place_xyz = sel
+        if not self.grasp_block(block):
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "class": block.class_name, "message": "grasp failed"}
+        placed = self.place_block(place_xyz)
+        return {"ok": bool(placed), "detected": len(blocks), "grasped": True,
+                "class": block.class_name,
+                "place": [round(float(v), 3) for v in place_xyz],
+                "message": "grasped and placed" if placed
+                           else "grasped but place failed"}
+
+    def stack_once(self) -> Dict[str, object]:
+        """Detect once and stack one block onto the base (the block closest
+        to ``STACK_POSITION``). Synchronous and headless. Sets the stacked
+        flag on success. Returns a JSON-serialisable result dict.
+        """
+        rgb, _ = self._camera.rgbd(filtered=False)
+        blocks = self.detect_blocks(rgb)
+        if self._stacked:
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "message": "already stacked (call reset_stack first)"}
+        if len(blocks) < 2:
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "message": "need at least 2 blocks to stack"}
+        sel = self._select_stack_targets(blocks)
+        if sel is None:
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "message": "no stack target found"}
+        mover, place_xyz = sel
+        if not self.grasp_block(mover):
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "class": mover.class_name, "message": "grasp failed"}
+        placed = self.place_block(place_xyz)
+        if placed:
+            self._stacked = True
+        return {"ok": bool(placed), "detected": len(blocks), "grasped": True,
+                "class": mover.class_name,
+                "place": [round(float(v), 3) for v in place_xyz],
+                "message": "stacked" if placed else "grasped but place failed"}
+
+    def reset_stack(self) -> None:
+        """Clear stacking state so :meth:`stack_once` can run again."""
+        self._stacked = False
+        self._block_status = {}
+
+    def move_home(self) -> None:
+        """Open the hand and park the arm at ``ASIDE_POSITION`` (a safe pose
+        that clears the camera view). Reuses the motion primitives.
+        """
+        self._hand_open()
+        time.sleep(CATCH_DELAY_S)
+        self._move_aside()
+
     # ── Move aside ─────────────────────────────────────────────────────────
 
     def _move_aside(self) -> None:
@@ -891,42 +1008,14 @@ class BlockGraspController:
                     if should_grasp:
                         target = None
                         target_place = None
-                        if STACK_ENABLED:
-                            # Two-block mode: put one block onto the other, once.
-                            if not self._stacked and len(blocks) >= 2:
-                                spx, spy = STACK_POSITION[:2]
-                                # Base = block closest to the configured spot.
-                                base = min(
-                                    blocks,
-                                    key=lambda b: math.sqrt(
-                                        (b.x - spx) ** 2 + (b.y - spy) ** 2
-                                    ),
-                                )
-                                # Mover = the other block (nearest to the base).
-                                others = [b for b in blocks if b is not base]
-                                target = min(
-                                    others,
-                                    key=lambda b: math.sqrt(
-                                        (b.x - base.x) ** 2 + (b.y - base.y) ** 2
-                                    ),
-                                )
-                                # Place one block-height above the base.
-                                pz = self._z_table + BLOCK_SIZE + GRASP_Z_OFFSET
-                                target_place = (base.x, base.y, pz)
-                        else:
-                            # Pick the first block NOT already at its place target
-                            for b in blocks:
-                                px, py = PLACE_POSITIONS.get(
-                                    b.class_name,
-                                    [b.x, b.y, DEFAULT_PLACE_Z],
-                                )[:2]
-                                dist_to_place = math.sqrt(
-                                    (b.x - px) ** 2 + (b.y - py) ** 2
-                                )
-                                if dist_to_place > PLACE_DISTANCE_THRESHOLD:
-                                    target = b
-                                    target_place = (px, py, self._z_table + GRASP_Z_OFFSET)
-                                    break
+                        # Same selection logic the headless skill API uses.
+                        sel = (
+                            self._select_stack_targets(blocks)
+                            if STACK_ENABLED
+                            else self._select_place_target(blocks)
+                        )
+                        if sel is not None:
+                            target, target_place = sel
 
                         if target is None:
                             print("[Loop] All blocks already placed — done!")

@@ -39,8 +39,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from clients.camera import D1CameraPrimitive
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
-from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
+# Low-level Feetech bus primitives — the public HeadArmRobot API does not expose
+# per-joint torque control, so drag-teach talks to ServoBus directly.
+from beingbeyond_d1_sdk.core._head_arm_core import (
+    ServoBus, JOINT_TO_ID, JOINT_ORDER, ARM_JOINTS,
+    step_to_q, q_to_step, vel_rad_to_param, acc_rad_to_param,
+    load_head_arm_limits,
+)
 
 SAVE_PATH = os.path.join(os.path.dirname(__file__), "handeye_calib.npz")
 
@@ -77,6 +83,73 @@ def _restore(fd, old):
 def _on_mouse(event, x, y, flags, param):
     if event == cv2.EVENT_LBUTTONDOWN:
         param["click"] = (x, y)
+
+
+# ── Servo bus wrapper (HeadArmRobot-compatible + arm torque control) ───────
+
+class _ArmBus:
+    """Thin ServoBus wrapper exposing the HeadArmRobot methods this script
+    uses, plus per-arm torque control for drag-teach.
+
+    Head joints (ids 11/12) stay torque-enabled and hold their commanded
+    angle at all times — only the 6 arm joints (ids 21~26) get released.
+    Uses the same step<->rad conversions as the SDK core so joint angles
+    match HeadArmRobot.get_positions().
+    """
+
+    IDS = [JOINT_TO_ID[j] for j in JOINT_ORDER]     # 8 servo ids, SDK order
+    ARM_IDS = [JOINT_TO_ID[j] for j in ARM_JOINTS]  # 6 arm servo ids (21~26)
+
+    def __init__(self, urdf, dev, baudrate,
+                 vel=math.radians(60.0), acc=math.radians(60.0)):
+        self.bus = ServoBus(dev, baudrate)
+        self.bus.ensure_protection(self.IDS)
+        self._lim = load_head_arm_limits(urdf)
+        self._speeds = [vel_rad_to_param(vel)] * 8
+        self._accs = [acc_rad_to_param(acc)] * 8
+        self.arm_torque_on = True
+        for i in self.IDS:
+            self.bus.torque_enable(i, True)
+
+    def get_positions(self):
+        d = self.bus.sync_read_pos_speed(self.IDS)
+        return [step_to_q(d[i][0]) for i in self.IDS]
+
+    def set_positions(self, q_rad):
+        steps = [q_to_step(q, self._lim[j]) for q, j in zip(q_rad, JOINT_ORDER)]
+        self.bus.sync_write_pos_ex(self.IDS, steps, self._speeds, self._accs)
+
+    def set_arm_torque(self, on):
+        """Enable/disable torque on the 6 arm joints only (head untouched)."""
+        if on:
+            # Snap the goal register to the current dragged pose first, so the
+            # arm holds where it is instead of jerking back to the stale goal.
+            self.set_positions(self.get_positions())
+        for i in self.ARM_IDS:
+            self.bus.torque_enable(i, on)
+        self.arm_torque_on = on
+
+    def wait_until_reached(self, target, active_joint_indices=None,
+                           pos_tol_deg=5.0, timeout=15.0):
+        idx = list(active_joint_indices) if active_joint_indices is not None else range(8)
+        tol = math.radians(pos_tol_deg)
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            q = self.get_positions()
+            if all(abs(q[i] - target[i]) <= tol for i in idx):
+                return time.time() - t0
+            time.sleep(0.02)
+        return None
+
+    def close(self):
+        # Hold the current pose on exit (avoid a sudden sag if we quit while
+        # torque was released), then release the port.
+        try:
+            if not self.arm_torque_on:
+                self.set_arm_torque(True)
+        except Exception:
+            pass
+        self.bus.close()
 
 
 # ── Load existing calibration ─────────────────────────────────────────────
@@ -116,7 +189,7 @@ def main():
 
     # ── Init hardware ──────────────────────────────────────────────────
     print("[Init] Robot ...")
-    robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
+    robot = _ArmBus(urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
     hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
     print("[Init] Camera ...")
     cam = D1CameraPrimitive(width=1280, height=720, fps=30)
@@ -181,6 +254,7 @@ def main():
     world_pts = []
     click_state = {"click": None}
     last_click = None
+    last_print_t = 0.0   # throttle for the real-time drag-mode readout
 
     WINDOW = "Hand-Eye Calibration"
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -189,10 +263,13 @@ def main():
 
     print("\n" + "=" * 60)
     print("  1. Click a reference point on the table")
-    print("  2. Move EE tip there: WASD=XY  ZX=Z  UO/IK/JL=RPY")
+    print("  2. Move EE tip there — two ways:")
+    print("       • Keyboard/IK: WASD=XY  ZX=Z  UO/IK/JL=RPY")
+    print("       • Drag-teach:  T to release arm torque, then hand-drag it")
     print("  3. SPACE to record a pair")
     print("  4. Repeat 6+ times, then C to compute & save")
-    print("  B=toggle hand  R=reset EE  ESC=quit")
+    print("  T=toggle arm torque (drag mode)  B=toggle hand  R=reset EE  ESC=quit")
+    print("\033[93m  ⚠ In drag mode the arm goes limp — support it before pressing T!\033[0m")
     print("=" * 60 + "\n")
 
     try:
@@ -221,10 +298,23 @@ def main():
             T_disp = kin.ee_in_base(qh_disp, qa_disp)
             ex, ey, ez = T_disp[0, 3], T_disp[1, 3], T_disp[2, 3]
 
+            # ── Real-time readout while torque is released (drag mode) ─
+            if not robot.arm_torque_on and time.time() - last_print_t > 0.1:
+                rpy_d = _R.from_matrix(T_disp[:3, :3]).as_euler('xyz', degrees=True)
+                print(f"\r[DRAG] EE=({ex:+.3f}, {ey:+.3f}, {ez:+.3f})  "
+                      f"RPY=({rpy_d[0]:+.0f}, {rpy_d[1]:+.0f}, {rpy_d[2]:+.0f})   ",
+                      end="", flush=True)
+                last_print_t = time.time()
+
             # ── Overlay ────────────────────────────────────────────────
-            status = "READY — click point, move EE, SPACE to record"
+            if robot.arm_torque_on:
+                status = "KEYBOARD/IK — click point, move EE, SPACE to record"
+                status_color = (0, 255, 0)
+            else:
+                status = "DRAG MODE (torque OFF) — hand-drag EE, SPACE to record"
+                status_color = (0, 165, 255)
             cv2.putText(vis, status, (15, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
             cv2.putText(vis, f"EE: ({ex:.3f}, {ey:.3f}, {ez:.3f})  Pairs: {len(pixel_pts)}",
                         (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.putText(vis, f"Head: yaw={math.degrees(qh_disp[0]):.0f} pitch={math.degrees(qh_disp[1]):.0f}",
@@ -242,6 +332,21 @@ def main():
 
             if key == 27:  # ESC
                 break
+
+            # ── Toggle arm torque (drag-teach) ────────────────────────
+            elif ch == 't':
+                robot.set_arm_torque(not robot.arm_torque_on)
+                if robot.arm_torque_on:
+                    # Re-sync IK state to the current (dragged) pose so the next
+                    # keyboard nudge starts from here instead of the stale target.
+                    q_now = np.asarray(robot.get_positions(), dtype=float)
+                    q_head, q_arm = kin.split_q(q_now)
+                    T_now = kin.ee_in_base(q_head, q_arm)
+                    p_des = T_now[:3, 3].copy(); p0 = p_des.copy()  # re-center clamp
+                    R_des = T_now[:3, :3].copy()
+                    print("  🔒 arm torque ON — keyboard/IK mode (state re-synced)")
+                else:
+                    print("  🖐 arm torque OFF — DRAG the arm by hand (support it!)")
 
             # ── Lock head ─────────────────────────────────────────────
             elif ch == 'b':
@@ -334,7 +439,7 @@ def main():
                 moved = True
                 print("  ↺ EE reset")
 
-            if moved:
+            if moved and robot.arm_torque_on:
                 off = p_des - p0
                 off = np.clip(off, -MAX_OFFSET, MAX_OFFSET)
                 p_des = p0 + off
