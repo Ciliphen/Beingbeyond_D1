@@ -6,12 +6,16 @@ Beingbeyond_D1 repo.
 
 ## Tools
 
-- `grasp_block(class_name: str = "")` — detect blocks and grasp one, place at
-  its class position. `class_name` (e.g. `red_cube`) restricts to one class;
-  empty grasps the first block not yet at its place spot. Returns JSON:
-  `{ok, detected, grasped, class, place, message}`.
-- `stack_blocks()` — two-block stacking: the block nearest `STACK_POSITION`
-  is the base; the other is grasped and placed on top. Runs once; call
+- `grasp_block(class_name: str = "")` — colour-sorting: detect blocks, grasp
+  one, and place it at its colour's designated spot (`PLACE_POSITIONS`).
+  `class_name` (e.g. `red_cube`) grasps the highest-score block of that class;
+  empty grasps the highest-score block not yet placed. A block already within
+  `PLACE_DISTANCE_THRESHOLD` of its spot is skipped (`grasped: false`, `ok: true`).
+  Returns JSON: `{ok, detected, grasped, class, place, message}`.
+- `stack_blocks(mover_class: str = "", base_class: str = "")` — stack one block
+  onto another. Give both `mover_class`/`base_class` to stack that colour pair
+  (error if either colour is missing); leave both empty to pick by proximity
+  (base = block nearest `STACK_POSITION`, other placed on top). Runs once; call
   `reset_stack` to run again.
 - `reset_stack()` — clear stacking state.
 - `move_home()` — open the hand and park the arm clear of the camera.

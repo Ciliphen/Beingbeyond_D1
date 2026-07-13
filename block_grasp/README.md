@@ -71,7 +71,7 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | `R` | 重置堆叠状态 |
 | `ESC` / `Q` | 退出 |
 
-**堆叠模式**（`STACK_ENABLED=True`，默认开）：检测到 ≥2 个方块时，以离 `STACK_POSITION` 最近的方块为底座，把另一个方块叠到其正上方，完成后停止；按 `R` 可重置重来。
+**堆叠**：检测到 ≥2 个方块时，以离 `STACK_POSITION` 最近的方块为底座，把另一个方块叠到其正上方，完成后停止；按 `R` 可重置重来。（交互模式按就近选底座；robonix skill 的 `stack_blocks` 还可指定颜色对，把某色叠到某色上。）
 
 > ⚠️ **安全**：真机操作前请确认急停按钮在手边；机械臂会实际运动，注意工作范围内无人无障碍；首次运行建议低速、留足空间观察。
 
@@ -107,8 +107,10 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | `IK_N_RESTARTS` | 4 | 末端精定位多起点重启次数 |
 | `JOINT_JUMP_THR_DEG` | 20.0 | 相邻步单关节最大跳变（度），超限视为近奇异 |
 | `HAND_OPEN / HAND_GRASP / HAND_CLOSE` | 见 `config.py` | 手部张开 / 抓取 / 闭合的 6 指位置（归一化 [0,1]，0=开 1=闭） |
-| `STACK_ENABLED` | True | 堆叠模式：把一个方块叠到另一个上（否则按类别摆放） |
-| `STACK_POSITION` | `[0.25, 0.0, 0.105]` | 选底座的参考点：离它最近的方块作为底座 |
+| `STACK_POSITION` | `[0.25, 0.0, 0.105]` | 未指定颜色对时，选底座的参考点：离它最近的方块作为底座 |
+| `PLACE_POSITIONS` | 见 `config.py` | 按颜色分类（`grasp_block`）的放置位置：每种颜色对应的桌面 x,y |
+| `PLACE_DISTANCE_THRESHOLD` | 0.05 | 方块离其颜色位置小于此距离视为已就位，`grasp_block` 跳过不再抓（m） |
+| `ASIDE_POSITION` | `[0.20, 0.0, 0.25]` | 让开相机的停靠位；也是分类时颜色无对应位置的兜底落点 |
 
 ## IK 说明
 

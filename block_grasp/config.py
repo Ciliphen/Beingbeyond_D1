@@ -77,27 +77,28 @@ HAND_CLOSE: list[float] = [0.7, 0.5, 0.8, 0.8, 0.8, 0.8]    # max tight
 GRASP_OK_MIN: float = 0.20   # below this = still open → no object
 GRASP_OK_MAX: float = 0.60   # above this = fully closed → nothing blocking
 
-# ── Place positions per class (base-frame x, y, z in metres) ──────────────
-# z = table_height + BLOCK_SIZE/2, so the cube sits on the table when released.
-# Tune these after measuring your actual table height!
-PLACE_POSITIONS: dict[str, list[float]] = {
-    "red_cube":    [0.20, 0.10, 0.105],    # 左前
-    "blue_cube":   [0.20, -0.10, 0.105],   # 右前
-    "green_cube":  [0.30, 0.10, 0.105],    # 左后
-    "yellow_cube": [0.30, -0.10, 0.105],   # 右后
-}
-DEFAULT_PLACE_Z: float = 0.105       # fallback place height: table + half cube
-
 # ── Stacking ──────────────────────────────────────────────────────────────
-# When enabled, all blocks are stacked at STACK_POSITION instead of
-# going to their per-class place positions.
-STACK_ENABLED: bool = True
-STACK_POSITION: list[float] = [0.25, 0.0, 0.105]  # tower base position
+# Stacking mode: pick up one block and stack it onto another.
+# When no colour pair is specified, the block nearest STACK_POSITION is used
+# as the base; STACK_POSITION is only a reference point for that choice.
+STACK_POSITION: list[float] = [0.25, 0.0, 0.105]  # reference point for default base
 
-# ── Classification ─────────────────────────────────────────────────────────
-# Distance below which a block is considered "already at target" → skip
+# ── Place positions per colour (base-frame x, y in metres) ────────────────
+# Used by the grasp_block action (grasp one block, then place it at its
+# colour's spot). Place Z is derived from the measured table height, so only
+# x,y are configured here. Not used by stacking.
+PLACE_POSITIONS: dict[str, list[float]] = {
+    "red_cube":    [0.135, -0.220],
+    "blue_cube":   [0.350, -0.220],
+    "green_cube":  [0.350, 0.250],
+    "yellow_cube": [0.135, 0.250],
+}
+# A block within this XY distance of its colour position is treated as already
+# placed → grasp_block skips it (no re-grasp).
 PLACE_DISTANCE_THRESHOLD: float = 0.05  # 5 cm
-# Arm parks here after placing to clear the camera view
+
+# Arm parks here after placing to clear the camera view; also the fallback
+# drop spot for grasp_block when a block's colour has no place position.
 ASIDE_POSITION: list[float] = [0.20, 0.0, 0.25]  # base-frame x, y, z
 
 # ── Grasp position offset (world XY, metres) ──────────────────────────────

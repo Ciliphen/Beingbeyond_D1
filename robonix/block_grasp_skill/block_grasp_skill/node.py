@@ -6,10 +6,10 @@ Wraps the existing YOLO-OBB + D1 dexterous-hand grasping pipeline
 so Pilot can trigger grasping with natural language via ``rbnx chat``.
 
 Tools:
-  - grasp_block(class_name)  — detect + grasp one block, place at its class spot
-  - stack_blocks()           — stack one block onto the base block (two-block mode)
-  - reset_stack()            — clear stacking state so stack_blocks can run again
-  - move_home()              — open hand + park arm clear of the camera
+  - grasp_block(class_name)                  — colour-sort: grasp one block, place at its colour spot
+  - stack_blocks(mover_class, base_class)    — stack one block onto another
+  - reset_stack()                            — clear stacking state so stack_blocks can run again
+  - move_home()                              — open hand + park arm clear of the camera
 
 Follows the roboarm_skill pattern: a raw FastMCP app attached to the Skill,
 capabilities declared manually after bootstrap. Hardware (arm, hand, camera,
@@ -105,13 +105,17 @@ def _ensure_controller():
 
 @mcp.tool()
 async def grasp_block(class_name: str = "") -> str:
-    """检测并抓取一个积木，放到该颜色对应的摆放位置。
+    """按颜色分类：抓取一个积木，放到该颜色对应的分类位置。
 
-    通过头部相机取图，运行 YOLO-OBB 检测桌面积木，选中一个尚未就位的积木，
-    用机械臂 + 灵巧手完成抓取并放到其类别对应位置。
+    通过头部相机取图，运行 YOLO-OBB 检测桌面积木，抓起一个积木后放到其颜色
+    在 PLACE_POSITIONS 里配置的位置（四色分拣）。
+
+    若目标积木已在其颜色位置附近（PLACE_DISTANCE_THRESHOLD 内），则视为已就位，
+    不再抓取（返回 grasped=false, ok=true）。
 
     Args:
-        class_name: 可选，指定只抓某个颜色/类别（如 "red_cube"）；留空则抓第一个尚未就位的积木。
+        class_name: 可选，指定只抓某个颜色/类别（如 "red_cube"），取该类最高分的；
+            留空则抓画面中尚未就位、置信度最高的一个，放到它自身颜色对应的位置。
     """
     try:
         ctrl = _ensure_controller()
@@ -126,15 +130,23 @@ async def grasp_block(class_name: str = "") -> str:
 
 
 @mcp.tool()
-async def stack_blocks() -> str:
-    """把一个积木叠到另一个积木上（两块堆叠模式，执行一次）。
+async def stack_blocks(mover_class: str = "", base_class: str = "") -> str:
+    """把一个积木叠到另一个积木上（执行一次）。
 
-    需要画面里至少有 2 个积木：离堆叠参考点最近的作为底座，另一个抓起来叠到其正上方。
+    需要画面里至少有 2 个积木。可指定颜色对：把 mover_class 叠到 base_class 上
+    （两者取各自最高分的块，任一颜色没检测到就报错）。两个参数须同时给或同时留空。
+    留空时按就近选择：离参考点最近的作底座，另一块抓起叠到其正上方。
     完成后需先调用 reset_stack 才能再次堆叠。
+
+    Args:
+        mover_class: 可选，被抓起叠上去的积木颜色（如 "red_cube"）。
+        base_class:  可选，作为底座的积木颜色（如 "blue_cube"）。
     """
     try:
         ctrl = _ensure_controller()
-        result = ctrl.stack_once()
+        result = ctrl.stack_once(
+            mover_class=mover_class or None, base_class=base_class or None
+        )
         return json.dumps(result, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -170,8 +182,8 @@ async def move_home() -> str:
 _TOOLS = [
     {
         "name": "grasp_block",
-        "description": "检测并抓取一个积木，放到该颜色对应的摆放位置。"
-        "可选传入颜色类别（如 'red_cube'）只抓该类；留空则抓第一个尚未就位的积木。",
+        "description": "按颜色分类：抓取一个积木，放到该颜色对应的分类位置。"
+        "可选传入颜色类别（如 'red_cube'）只抓该类的最高分块；留空则抓置信度最高的一个，放到其自身颜色位置。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -185,9 +197,23 @@ _TOOLS = [
     },
     {
         "name": "stack_blocks",
-        "description": "把一个积木叠到另一个积木上（两块堆叠，执行一次）。"
-        "画面需至少 2 个积木。完成后需先 reset_stack 才能再堆。",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "description": "把一个积木叠到另一个积木上（执行一次）。画面需至少 2 个积木。"
+        "可指定颜色对（mover_class 叠到 base_class 上，须同时给），留空则就近选底座。"
+        "完成后需先 reset_stack 才能再堆。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mover_class": {
+                    "type": "string",
+                    "description": "可选，被叠上去的积木颜色，如 'red_cube'；须与 base_class 同时给",
+                },
+                "base_class": {
+                    "type": "string",
+                    "description": "可选，作底座的积木颜色，如 'blue_cube'；须与 mover_class 同时给",
+                },
+            },
+            "required": [],
+        },
     },
     {
         "name": "reset_stack",

@@ -54,7 +54,6 @@ from block_grasp.config import (
     CALIB_PATH,
     CATCH_DELAY_S,
     CONF_THRESHOLD,
-    DEFAULT_PLACE_Z,
     EE_PITCH_DEG,
     EE_ROLL_DEG,
     EE_YAW_DEG,
@@ -68,8 +67,6 @@ from block_grasp.config import (
     GRAVITY_SAG_FACTOR,
     HAND_GRASP,
     HAND_OPEN,
-    PLACE_DISTANCE_THRESHOLD,
-    STACK_ENABLED,
     STACK_POSITION,
     HEAD_PITCH_DEG,
     HEAD_YAW_DEG,
@@ -85,6 +82,7 @@ from block_grasp.config import (
     JOINT_JUMP_THR_DEG,
     MAX_DXY,
     OBB_GRASP_RATIO,
+    PLACE_DISTANCE_THRESHOLD,
     PLACE_POSITIONS,
     Z_SAFE,
 )
@@ -809,64 +807,74 @@ class BlockGraspController:
         pz = self._z_table + BLOCK_SIZE + GRASP_Z_OFFSET
         return mover, (base.x, base.y, pz)
 
-    def _select_place_target(
-        self,
-        blocks: List[BlockDetection],
-        class_name: Optional[str] = None,
-    ) -> Optional[Tuple[BlockDetection, Tuple[float, float, float]]]:
-        """Pick ``(block, place_xyz)`` for the first block not yet at its
-        class place position, or ``None``. If *class_name* is given, only
-        blocks of that class are considered.
-        """
-        for b in blocks:
-            if class_name and b.class_name != class_name:
-                continue
-            px, py = PLACE_POSITIONS.get(
-                b.class_name, [b.x, b.y, DEFAULT_PLACE_Z]
-            )[:2]
-            if math.hypot(b.x - px, b.y - py) > PLACE_DISTANCE_THRESHOLD:
-                return b, (px, py, self._z_table + GRASP_Z_OFFSET)
-        return None
-
     # ── Headless single-shot actions (used by the robonix skill) ────────────
 
     def grasp_once(
         self, class_name: Optional[str] = None
     ) -> Dict[str, object]:
-        """Detect once, grasp the first block not yet at its place position
-        (optionally filtered to *class_name*), and place it there.
+        """Colour-sorting action: detect once, grasp one block and place it at
+        its colour's designated position (``PLACE_POSITIONS``).
 
-        Synchronous and headless — no OpenCV window, no background thread.
-        The caller must ensure nothing else drives the arm concurrently.
-        Returns a JSON-serialisable result dict.
+        If *class_name* is given, grasp the highest-score block of that class;
+        otherwise grasp the highest-score block overall. The block is placed at
+        ``PLACE_POSITIONS[its colour]`` (falls back to ``ASIDE_POSITION`` if the
+        colour has no entry). Synchronous and headless.
         """
         rgb, _ = self._camera.rgbd(filtered=False)
         blocks = self.detect_blocks(rgb)
         if not blocks:
             return {"ok": False, "detected": 0, "grasped": False,
                     "message": "no blocks detected"}
-        sel = self._select_place_target(blocks, class_name)
-        if sel is None:
-            msg = (f"no '{class_name}' block available to grasp"
-                   if class_name
-                   else "all detected blocks already at their place positions")
-            return {"ok": False, "detected": len(blocks), "grasped": False,
-                    "message": msg}
-        block, place_xyz = sel
+
+        def _at_place(b: BlockDetection) -> bool:
+            """True if block *b* is already within threshold of its colour spot."""
+            pos = PLACE_POSITIONS.get(b.class_name)
+            if pos is None:
+                return False
+            return math.hypot(b.x - pos[0], b.y - pos[1]) <= PLACE_DISTANCE_THRESHOLD
+
+        if class_name:
+            block = next(
+                (b for b in blocks if b.class_name == class_name), None
+            )
+            if block is None:
+                return {"ok": False, "detected": len(blocks), "grasped": False,
+                        "message": f"no '{class_name}' block detected"}
+            if _at_place(block):
+                return {"ok": True, "detected": len(blocks), "grasped": False,
+                        "class": block.class_name,
+                        "message": f"'{class_name}' already at its place position"}
+        else:
+            # Grasp the highest-score block not yet at its colour spot.
+            block = next((b for b in blocks if not _at_place(b)), None)
+            if block is None:
+                return {"ok": True, "detected": len(blocks), "grasped": False,
+                        "message": "all detected blocks already at their place positions"}
         if not self.grasp_block(block):
             return {"ok": False, "detected": len(blocks), "grasped": False,
                     "class": block.class_name, "message": "grasp failed"}
+        px, py = PLACE_POSITIONS.get(block.class_name, ASIDE_POSITION[:2])
+        place_xyz = (px, py, self._z_table + GRASP_Z_OFFSET)
         placed = self.place_block(place_xyz)
         return {"ok": bool(placed), "detected": len(blocks), "grasped": True,
                 "class": block.class_name,
                 "place": [round(float(v), 3) for v in place_xyz],
-                "message": "grasped and placed" if placed
+                "message": "grasped and placed at colour spot" if placed
                            else "grasped but place failed"}
 
-    def stack_once(self) -> Dict[str, object]:
-        """Detect once and stack one block onto the base (the block closest
-        to ``STACK_POSITION``). Synchronous and headless. Sets the stacked
-        flag on success. Returns a JSON-serialisable result dict.
+    def stack_once(
+        self,
+        mover_class: Optional[str] = None,
+        base_class: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """Detect once and stack one block onto another. Synchronous and
+        headless. Sets the stacked flag on success.
+
+        If *mover_class* and *base_class* are both given, stack the
+        highest-score *mover_class* block onto the highest-score *base_class*
+        block (error if either colour is not detected). Otherwise pick by
+        proximity: base = block closest to ``STACK_POSITION``, mover = the
+        remaining block nearest the base. Returns a JSON-serialisable result.
         """
         rgb, _ = self._camera.rgbd(filtered=False)
         blocks = self.detect_blocks(rgb)
@@ -876,11 +884,32 @@ class BlockGraspController:
         if len(blocks) < 2:
             return {"ok": False, "detected": len(blocks), "grasped": False,
                     "message": "need at least 2 blocks to stack"}
-        sel = self._select_stack_targets(blocks)
-        if sel is None:
-            return {"ok": False, "detected": len(blocks), "grasped": False,
-                    "message": "no stack target found"}
-        mover, place_xyz = sel
+
+        if mover_class or base_class:
+            if not (mover_class and base_class):
+                return {"ok": False, "detected": len(blocks), "grasped": False,
+                        "message": "must specify both mover_class and base_class"}
+            base = next(
+                (b for b in blocks if b.class_name == base_class), None
+            )
+            if base is None:
+                return {"ok": False, "detected": len(blocks), "grasped": False,
+                        "message": f"base '{base_class}' not detected"}
+            mover = next(
+                (b for b in blocks
+                 if b.class_name == mover_class and b is not base), None
+            )
+            if mover is None:
+                return {"ok": False, "detected": len(blocks), "grasped": False,
+                        "message": f"mover '{mover_class}' not detected"}
+            pz = self._z_table + BLOCK_SIZE + GRASP_Z_OFFSET
+            place_xyz: Tuple[float, float, float] = (base.x, base.y, pz)
+        else:
+            sel = self._select_stack_targets(blocks)
+            if sel is None:
+                return {"ok": False, "detected": len(blocks), "grasped": False,
+                        "message": "no stack target found"}
+            mover, place_xyz = sel
         if not self.grasp_block(mover):
             return {"ok": False, "detected": len(blocks), "grasped": False,
                     "class": mover.class_name, "message": "grasp failed"}
@@ -942,12 +971,8 @@ class BlockGraspController:
                 self._block_status[key] = "OK"
                 time.sleep(1.0)
                 self.place_block(target_place)
-                if STACK_ENABLED:
-                    self._stacked = True
-                    print("[Stack] Block stacked onto base — done")
-                else:
-                    # Move aside to clear camera view (not in stack mode)
-                    self._move_aside()
+                self._stacked = True
+                print("[Stack] Block stacked onto base — done")
             else:
                 self._block_status[key] = "FAIL"
                 print("[Loop] Grasp failed, skipping place.")
@@ -967,10 +992,9 @@ class BlockGraspController:
         - **ESC / Q** — exit
         """
         mode_str = "AUTO" if self._auto_grasp else "MANUAL (press SPACE)"
-        if STACK_ENABLED:
-            mode_str += " | STACK"
-            sp = STACK_POSITION
-            print(f"  Stacking at ({sp[0]:.3f}, {sp[1]:.3f})")
+        mode_str += " | STACK"
+        sp = STACK_POSITION
+        print(f"  Base reference at ({sp[0]:.3f}, {sp[1]:.3f})")
         print("\n" + "=" * 60)
         print(f"  D1 Block Grasp — YOLO + Dexterous Hand  [{mode_str}]")
         print(f"  Table Z = {self._z_table:.3f} m  |  "
@@ -1009,11 +1033,7 @@ class BlockGraspController:
                         target = None
                         target_place = None
                         # Same selection logic the headless skill API uses.
-                        sel = (
-                            self._select_stack_targets(blocks)
-                            if STACK_ENABLED
-                            else self._select_place_target(blocks)
-                        )
+                        sel = self._select_stack_targets(blocks)
                         if sel is not None:
                             target, target_place = sel
 
