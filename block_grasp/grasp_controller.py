@@ -322,7 +322,8 @@ class BlockGraspController:
         # ── State ───────────────────────────────────────────────────────
         self._busy = False
         self._step_count = 0
-        self._stack_count = 0  # blocks already stacked at STACK_POSITION
+        # Two-block stacking: place one block onto the other, then stop.
+        self._stacked = False  # True once the mover is on the base
         # Background grasp thread + per-block status (SKIP / OK / FAIL)
         self._grasp_thread: Optional[threading.Thread] = None
         self._block_status: dict = {}
@@ -568,6 +569,11 @@ class BlockGraspController:
                 print(f"  [IK] Step {i} error: {e}")
                 return False
 
+        # The per-step sleeps only pace command output — they do NOT guarantee
+        # the arm physically arrived. Wait for it to settle at the final pose so
+        # the caller (refine / grasp) doesn't read a lagging, far-from-target
+        # position and abort.
+        self._robot.wait_until_reached(cmd, active_joint_indices=range(2, 8))
         return True
 
     def _refine_and_move(
@@ -595,12 +601,17 @@ class BlockGraspController:
                 pos_tol=IK_POS_TOL, tilt_tol_deg=IK_TILT_TOL_DEG,
                 yaw_tol_deg=IK_YAW_TOL_DEG,
             )
-            # Reject near-singularity joint jumps (excl. j6 wrist roll)
+            # Reject near-singularity joint jumps (excl. j6 wrist roll): don't
+            # swing to a distant IK branch. The arm is already at the target
+            # from the interpolation phase, so keep it put and report the pose
+            # it actually holds — if that's close enough, the grasp proceeds.
             dq_max = float(np.max(np.abs(q_as[:5] - q_arm[:5])))
             if dq_max > math.radians(JOINT_JUMP_THR_DEG):
+                T_cur = self._kin.ee_in_base(q_head, q_arm)
+                cur_err = float(np.linalg.norm(T_cur[:3, 3] - T_target[:3, 3]))
                 print(f"  [IK] refine joint jump {math.degrees(dq_max):.0f}° "
-                      f"(near singularity), not moving.")
-                return 999.0
+                      f"(near singularity), keeping current pose (err={cur_err:.4f}).")
+                return cur_err
             # Apply OBB yaw directly to joint_6 (wrist rotation)
             q_as[5] += j6_offset_rad
             # Normalise to shortest path from current joint_6
@@ -611,7 +622,10 @@ class BlockGraspController:
             cmd[0] = math.radians(HEAD_YAW_DEG)
             cmd[1] = math.radians(HEAD_PITCH_DEG)
             self._robot.set_positions(cmd)
-            time.sleep(0.05)
+            # Wait for the arm to physically settle at the refined pose before
+            # reporting success — otherwise the EE is still short of target when
+            # the caller descends/grasps (looks like poor IK precision).
+            self._robot.wait_until_reached(cmd, active_joint_indices=range(2, 8))
             return float(best_err)
         except Exception as e:
             print(f"  [IK] SLSQP refine error: {e}")
@@ -811,8 +825,8 @@ class BlockGraspController:
                 time.sleep(1.0)
                 self.place_block(target_place)
                 if STACK_ENABLED:
-                    self._stack_count += 1
-                    print(f"[Stack] {self._stack_count} blocks stacked")
+                    self._stacked = True
+                    print("[Stack] Block stacked onto base — done")
                 else:
                     # Move aside to clear camera view (not in stack mode)
                     self._move_aside()
@@ -842,7 +856,7 @@ class BlockGraspController:
         print(f"  D1 Block Grasp — YOLO + Dexterous Hand  [{mode_str}]")
         print(f"  Table Z = {self._z_table:.3f} m  |  "
               f"Grasp Z = {self._z_table + GRASP_Z_OFFSET:.3f} m")
-        print("  SPACE = grasp  |  A = toggle auto  |  ESC/Q = quit")
+        print("  SPACE = grasp  |  A = toggle auto  |  R = reset stack  |  ESC/Q = quit")
         print("=" * 60 + "\n")
 
         window = "D1 Block Grasp" if not self._headless else None
@@ -867,41 +881,39 @@ class BlockGraspController:
                     # ── Detect (2D homography, no depth) ────────────────
                     blocks = self.detect_blocks(rgb)
 
-                    # ── Auto-detect stack height ────────────────────────
-                    if STACK_ENABLED:
-                        spx, spy = STACK_POSITION[:2]
-                        n_stacked = sum(
-                            1 for b in blocks
-                            if math.sqrt((b.x - spx) ** 2 + (b.y - spy) ** 2)
-                            <= PLACE_DISTANCE_THRESHOLD
-                        )
-                        if n_stacked > self._stack_count:
-                            self._stack_count = n_stacked
-                            print(f"[Stack] Auto-detected {n_stacked} blocks on tower")
-
                 # ── Act ────────────────────────────────────────────────
                 if not self._busy and blocks:
                     should_grasp = self._auto_grasp or trigger_grasp
                     trigger_grasp = False
 
                     if should_grasp:
-                        # Pick the first block NOT already at its target
                         target = None
                         target_place = None
-                        for b in blocks:
-                            if STACK_ENABLED:
-                                px, py = STACK_POSITION[:2]
-                                # Skip blocks already on the tower
-                                dist_to_stack = math.sqrt(
-                                    (b.x - px) ** 2 + (b.y - py) ** 2
+                        if STACK_ENABLED:
+                            # Two-block mode: put one block onto the other, once.
+                            if not self._stacked and len(blocks) >= 2:
+                                spx, spy = STACK_POSITION[:2]
+                                # Base = block closest to the configured spot.
+                                base = min(
+                                    blocks,
+                                    key=lambda b: math.sqrt(
+                                        (b.x - spx) ** 2 + (b.y - spy) ** 2
+                                    ),
                                 )
-                                if dist_to_stack <= PLACE_DISTANCE_THRESHOLD:
-                                    continue
-                                target = b
-                                pz = self._z_table + self._stack_count * BLOCK_SIZE + GRASP_Z_OFFSET
-                                target_place = (px, py, pz)
-                                break
-                            else:
+                                # Mover = the other block (nearest to the base).
+                                others = [b for b in blocks if b is not base]
+                                target = min(
+                                    others,
+                                    key=lambda b: math.sqrt(
+                                        (b.x - base.x) ** 2 + (b.y - base.y) ** 2
+                                    ),
+                                )
+                                # Place one block-height above the base.
+                                pz = self._z_table + BLOCK_SIZE + GRASP_Z_OFFSET
+                                target_place = (base.x, base.y, pz)
+                        else:
+                            # Pick the first block NOT already at its place target
+                            for b in blocks:
                                 px, py = PLACE_POSITIONS.get(
                                     b.class_name,
                                     [b.x, b.y, DEFAULT_PLACE_Z],
@@ -999,6 +1011,10 @@ class BlockGraspController:
                         self._auto_grasp = not self._auto_grasp
                         mode_str = "AUTO" if self._auto_grasp else "MANUAL"
                         print(f"[Loop] Mode: {mode_str}")
+                    elif key in (ord('r'), ord('R')):
+                        self._stacked = False
+                        self._block_status = {}
+                        print("[Loop] R pressed — stack state reset")
 
                 self._step_count += 1
 
