@@ -93,9 +93,15 @@ PLACE_POSITIONS: dict[str, list[float]] = {
     "green_cube":  [0.350, 0.250],
     "yellow_cube": [0.135, 0.250],
 }
-# A block within this XY distance of its colour position is treated as already
+# A block within this XY distance of its target position is treated as already
 # placed → grasp_block skips it (no re-grasp).
 PLACE_DISTANCE_THRESHOLD: float = 0.05  # 5 cm
+
+# Named drop positions addressable by name in grasp_block's position argument.
+# The per-colour PLACE_POSITIONS above are also addressable by colour name.
+NAMED_POSITIONS: dict[str, list[float]] = {
+    "中间": [0.198, 0.107],
+}
 
 # Arm parks here after placing to clear the camera view; also the fallback
 # drop spot for grasp_block when a block's colour has no place position.

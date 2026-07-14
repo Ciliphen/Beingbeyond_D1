@@ -6,7 +6,7 @@ Wraps the existing YOLO-OBB + D1 dexterous-hand grasping pipeline
 so Pilot can trigger grasping with natural language via ``rbnx chat``.
 
 Tools:
-  - grasp_block(class_name)                  — colour-sort: grasp one block, place at its colour spot
+  - grasp_block(class_name, position)        — grasp one block, place at position (name/coord/colour default)
   - stack_blocks(mover_class, base_class)    — stack one block onto another
   - reset_stack()                            — clear stacking state so stack_blocks can run again
   - move_home()                              — open hand + park arm clear of the camera
@@ -103,23 +103,40 @@ def _ensure_controller():
 # ---------------------------------------------------------------------------
 
 
+def _parse_position(position: str):
+    """Parse the position argument: "" → None (colour default); "x,y" → [x, y]
+    coordinate; anything else → a named position string."""
+    position = position.strip()
+    if not position:
+        return None
+    parts = position.replace("，", ",").split(",")
+    if len(parts) == 2:
+        try:
+            return [float(parts[0]), float(parts[1])]
+        except ValueError:
+            pass
+    return position
+
+
 @mcp.tool()
-async def grasp_block(class_name: str = "") -> str:
-    """按颜色分类：抓取一个积木，放到该颜色对应的分类位置。
+async def grasp_block(class_name: str = "", position: str = "") -> str:
+    """按颜色抓取一个积木，放到指定位置。
 
-    通过头部相机取图，运行 YOLO-OBB 检测桌面积木，抓起一个积木后放到其颜色
-    在 PLACE_POSITIONS 里配置的位置（四色分拣）。
-
-    若目标积木已在其颜色位置附近（PLACE_DISTANCE_THRESHOLD 内），则视为已就位，
-    不再抓取（返回 grasped=false, ok=true）。
+    通过头部相机取图，运行 YOLO-OBB 检测桌面积木，抓起一个积木后放到 position
+    指定的位置。若目标积木已在目标位置附近（PLACE_DISTANCE_THRESHOLD 内），则视为
+    已就位，不再抓取（返回 grasped=false, ok=true）。
 
     Args:
         class_name: 可选，指定只抓某个颜色/类别（如 "red_cube"），取该类最高分的；
-            留空则抓画面中尚未就位、置信度最高的一个，放到它自身颜色对应的位置。
+            留空则抓画面中尚未就位、置信度最高的一个。
+        position: 可选，放置位置。可填命名位置（如 "中间"、"red_cube"）或坐标
+            字符串（如 "0.2,0.15"）；留空则放到该积木自身颜色对应的位置。
     """
     try:
         ctrl = _ensure_controller()
-        result = ctrl.grasp_once(class_name=class_name or None)
+        result = ctrl.grasp_once(
+            class_name=class_name or None, position=_parse_position(position)
+        )
         return json.dumps(result, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -182,15 +199,20 @@ async def move_home() -> str:
 _TOOLS = [
     {
         "name": "grasp_block",
-        "description": "按颜色分类：抓取一个积木，放到该颜色对应的分类位置。"
-        "可选传入颜色类别（如 'red_cube'）只抓该类的最高分块；留空则抓置信度最高的一个，放到其自身颜色位置。",
+        "description": "按颜色抓取一个积木，放到指定位置。"
+        "class_name 指定只抓该颜色的最高分块（留空抓置信度最高的一个）；"
+        "position 指定放置位置，可填命名位置（如 '中间'、'red_cube'）或坐标 '0.2,0.15'，留空放到该积木自身颜色位置。",
         "input_schema": {
             "type": "object",
             "properties": {
                 "class_name": {
                     "type": "string",
                     "description": "可选，积木颜色/类别，如 'red_cube'、'blue_cube'；留空抓任意一个",
-                }
+                },
+                "position": {
+                    "type": "string",
+                    "description": "可选，放置位置：命名位置（'中间'、'red_cube' 等）或坐标 'x,y'；留空放到该积木颜色对应位置",
+                },
             },
             "required": [],
         },

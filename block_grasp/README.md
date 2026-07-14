@@ -109,7 +109,8 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | `HAND_OPEN / HAND_GRASP / HAND_CLOSE` | 见 `config.py` | 手部张开 / 抓取 / 闭合的 6 指位置（归一化 [0,1]，0=开 1=闭） |
 | `STACK_POSITION` | `[0.25, 0.0, 0.105]` | 未指定颜色对时，选底座的参考点：离它最近的方块作为底座 |
 | `PLACE_POSITIONS` | 见 `config.py` | 按颜色分类（`grasp_block`）的放置位置：每种颜色对应的桌面 x,y |
-| `PLACE_DISTANCE_THRESHOLD` | 0.05 | 方块离其颜色位置小于此距离视为已就位，`grasp_block` 跳过不再抓（m） |
+| `PLACE_DISTANCE_THRESHOLD` | 0.05 | 方块离目标位置小于此距离视为已就位，`grasp_block` 跳过不再抓（m） |
+| `NAMED_POSITIONS` | `{"中间": [0.198, 0.107]}` | 命名放置位置，供 `grasp_block` 的 `position` 按名引用 |
 | `ASIDE_POSITION` | `[0.20, 0.0, 0.25]` | 让开相机的停靠位；也是分类时颜色无对应位置的兜底落点 |
 
 ## IK 说明

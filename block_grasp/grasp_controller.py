@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -81,6 +81,7 @@ from block_grasp.config import (
     IOU_THRESHOLD,
     JOINT_JUMP_THR_DEG,
     MAX_DXY,
+    NAMED_POSITIONS,
     OBB_GRASP_RATIO,
     PLACE_DISTANCE_THRESHOLD,
     PLACE_POSITIONS,
@@ -809,16 +810,44 @@ class BlockGraspController:
 
     # ── Headless single-shot actions (used by the robonix skill) ────────────
 
+    def _resolve_place_xy(
+        self,
+        class_name: str,
+        position: Optional[Union[str, Sequence[float]]],
+    ) -> Tuple[float, float]:
+        """Resolve the target drop (x, y) for a block of *class_name*.
+
+        - ``position is None``: the colour's own spot (``PLACE_POSITIONS``),
+          falling back to ``ASIDE_POSITION`` if the colour has no entry.
+        - ``position`` is a name (str): looked up in ``NAMED_POSITIONS`` first,
+          then ``PLACE_POSITIONS`` (colour names). Raises ``KeyError`` if unknown.
+        - ``position`` is a coordinate pair: used literally.
+        """
+        if position is None or position == "":
+            p = PLACE_POSITIONS.get(class_name, ASIDE_POSITION[:2])
+            return float(p[0]), float(p[1])
+        if isinstance(position, str):
+            p = NAMED_POSITIONS.get(position) or PLACE_POSITIONS.get(position)
+            if p is None:
+                raise KeyError(position)
+            return float(p[0]), float(p[1])
+        return float(position[0]), float(position[1])
+
     def grasp_once(
-        self, class_name: Optional[str] = None
+        self,
+        class_name: Optional[str] = None,
+        position: Optional[Union[str, Sequence[float]]] = None,
     ) -> Dict[str, object]:
         """Colour-sorting action: detect once, grasp one block and place it at
-        its colour's designated position (``PLACE_POSITIONS``).
+        *position*.
 
-        If *class_name* is given, grasp the highest-score block of that class;
-        otherwise grasp the highest-score block overall. The block is placed at
-        ``PLACE_POSITIONS[its colour]`` (falls back to ``ASIDE_POSITION`` if the
-        colour has no entry). Synchronous and headless.
+        *position* may be a named spot (e.g. ``"中间"`` or a colour name), a
+        literal ``(x, y)`` coordinate, or ``None`` to use the block's own
+        colour spot (``PLACE_POSITIONS``). If *class_name* is given, grasp the
+        highest-score block of that class; otherwise grasp the highest-score
+        block not yet at its colour spot. A block already within
+        ``PLACE_DISTANCE_THRESHOLD`` of its target is skipped. Synchronous and
+        headless.
         """
         rgb, _ = self._camera.rgbd(filtered=False)
         blocks = self.detect_blocks(rgb)
@@ -826,7 +855,7 @@ class BlockGraspController:
             return {"ok": False, "detected": 0, "grasped": False,
                     "message": "no blocks detected"}
 
-        def _at_place(b: BlockDetection) -> bool:
+        def _at_colour_spot(b: BlockDetection) -> bool:
             """True if block *b* is already within threshold of its colour spot."""
             pos = PLACE_POSITIONS.get(b.class_name)
             if pos is None:
@@ -840,26 +869,36 @@ class BlockGraspController:
             if block is None:
                 return {"ok": False, "detected": len(blocks), "grasped": False,
                         "message": f"no '{class_name}' block detected"}
-            if _at_place(block):
-                return {"ok": True, "detected": len(blocks), "grasped": False,
-                        "class": block.class_name,
-                        "message": f"'{class_name}' already at its place position"}
         else:
             # Grasp the highest-score block not yet at its colour spot.
-            block = next((b for b in blocks if not _at_place(b)), None)
+            block = next((b for b in blocks if not _at_colour_spot(b)), None)
             if block is None:
                 return {"ok": True, "detected": len(blocks), "grasped": False,
                         "message": "all detected blocks already at their place positions"}
+
+        try:
+            tx, ty = self._resolve_place_xy(block.class_name, position)
+        except KeyError:
+            return {"ok": False, "detected": len(blocks), "grasped": False,
+                    "class": block.class_name,
+                    "message": f"unknown position '{position}'"}
+
+        # Skip if the block is already at its target position.
+        if math.hypot(block.x - tx, block.y - ty) <= PLACE_DISTANCE_THRESHOLD:
+            return {"ok": True, "detected": len(blocks), "grasped": False,
+                    "class": block.class_name,
+                    "place": [round(tx, 3), round(ty, 3)],
+                    "message": "already at target position"}
+
         if not self.grasp_block(block):
             return {"ok": False, "detected": len(blocks), "grasped": False,
                     "class": block.class_name, "message": "grasp failed"}
-        px, py = PLACE_POSITIONS.get(block.class_name, ASIDE_POSITION[:2])
-        place_xyz = (px, py, self._z_table + GRASP_Z_OFFSET)
+        place_xyz = (tx, ty, self._z_table + GRASP_Z_OFFSET)
         placed = self.place_block(place_xyz)
         return {"ok": bool(placed), "detected": len(blocks), "grasped": True,
                 "class": block.class_name,
                 "place": [round(float(v), 3) for v in place_xyz],
-                "message": "grasped and placed at colour spot" if placed
+                "message": "grasped and placed" if placed
                            else "grasped but place failed"}
 
     def stack_once(

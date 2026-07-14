@@ -24,7 +24,7 @@ skill node 是薄层：只做 Robonix 生命周期 + 结果 JSON 化。检测/�
 
 | 工具 | 作用 |
 |------|------|
-| `grasp_block(class_name="")` | 按颜色分类：抓一个积木放到该颜色对应位置；`class_name` 可限定颜色 |
+| `grasp_block(class_name="", position="")` | 按颜色抓一个积木放到 `position`（命名位置"中间"/颜色名 或 坐标"x,y"）；留空放到该颜色对应位置 |
 | `stack_blocks(mover_class="", base_class="")` | 堆叠一次；给颜色对则把 mover 叠到 base 上，留空则底座=离 STACK_POSITION 最近者 |
 | `reset_stack()` | 重置堆叠状态 |
 | `move_home()` | 张手 + 机械臂回安全位 |

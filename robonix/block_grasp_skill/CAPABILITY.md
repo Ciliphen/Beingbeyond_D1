@@ -6,11 +6,13 @@ Beingbeyond_D1 repo.
 
 ## Tools
 
-- `grasp_block(class_name: str = "")` — colour-sorting: detect blocks, grasp
-  one, and place it at its colour's designated spot (`PLACE_POSITIONS`).
-  `class_name` (e.g. `red_cube`) grasps the highest-score block of that class;
-  empty grasps the highest-score block not yet placed. A block already within
-  `PLACE_DISTANCE_THRESHOLD` of its spot is skipped (`grasped: false`, `ok: true`).
+- `grasp_block(class_name: str = "", position: str = "")` — detect blocks,
+  grasp one, and place it at `position`. `class_name` (e.g. `red_cube`) grasps
+  the highest-score block of that class; empty grasps the highest-score block
+  not yet at its colour spot. `position` is a named spot (`中间`, a colour name)
+  or an `"x,y"` coordinate; empty uses the block's own colour spot
+  (`PLACE_POSITIONS`). A block already within `PLACE_DISTANCE_THRESHOLD` of its
+  target is skipped (`grasped: false`, `ok: true`).
   Returns JSON: `{ok, detected, grasped, class, place, message}`.
 - `stack_blocks(mover_class: str = "", base_class: str = "")` — stack one block
   onto another. Give both `mover_class`/`base_class` to stack that colour pair
