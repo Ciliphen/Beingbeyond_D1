@@ -34,7 +34,7 @@ Beingbeyond_D1 repo.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| BEINGBEYOND_PATH | /home/xlf/Beingbeyond_D1 | Repo root (import path) |
+| BEINGBEYOND_PATH | $HOME/Beingbeyond_D1 | Repo root (import path) |
 | BLOCK_GRASP_PYTHON | .../envs/bb_d1_robonix/bin/python3 | Python 3.10 interpreter |
 | BLOCK_GRASP_MODEL | auto (newest best.pt) | YOLO-OBB weight path |
 | BLOCK_GRASP_HAND_TYPE | right | Dexterous hand side |

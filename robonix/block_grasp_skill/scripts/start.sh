@@ -9,10 +9,10 @@ set -euo pipefail
 echo "[block_grasp_skill] starting..."
 
 # Beingbeyond_D1 repo root (block_grasp / object_detect / clients live here).
-export BEINGBEYOND_PATH="${BEINGBEYOND_PATH:-/home/xlf/Beingbeyond_D1}"
+export BEINGBEYOND_PATH="${BEINGBEYOND_PATH:-$HOME/Beingbeyond_D1}"
 
 # Python 3.10 env with the full stack (override BLOCK_GRASP_PYTHON if needed).
-PYTHON="${BLOCK_GRASP_PYTHON:-/home/xlf/miniconda3/envs/bb_d1_robonix/bin/python3}"
+PYTHON="${BLOCK_GRASP_PYTHON:-$HOME/miniconda3/envs/bb_d1_robonix/bin/python3}"
 
 # robonix_api is served from the robonix source tree, not pip-installed.
 ROBONIX_API="$(rbnx path robonix-api)"

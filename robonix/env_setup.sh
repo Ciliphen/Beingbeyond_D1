@@ -9,11 +9,15 @@
 set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-bb_d1_robonix}"
-REPO="${BEINGBEYOND_PATH:-/home/xlf/Beingbeyond_D1}"
+REPO="${BEINGBEYOND_PATH:-$HOME/Beingbeyond_D1}"
 SDK_WHEEL="${REPO}/lib/beingbeyond_d1_sdk-0.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 
-echo "[env_setup] creating conda env '${ENV_NAME}' (python 3.10)"
-conda create -y -n "${ENV_NAME}" python=3.10
+if conda env list | grep -qE "^\s*${ENV_NAME}\s"; then
+    echo "[env_setup] conda env '${ENV_NAME}' already exists, reusing"
+else
+    echo "[env_setup] creating conda env '${ENV_NAME}' (python 3.10)"
+    conda create -y -n "${ENV_NAME}" python=3.10
+fi
 
 # Resolve the env's python without needing `conda activate` in a script.
 ENV_PY="$(conda run -n "${ENV_NAME}" python -c 'import sys; print(sys.executable)')"

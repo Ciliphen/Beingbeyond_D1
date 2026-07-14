@@ -24,7 +24,7 @@ import threading
 import traceback
 
 # -- Make the Beingbeyond_D1 repo importable (block_grasp / object_detect / clients) --
-_ROOT = os.environ.get("BEINGBEYOND_PATH", "/home/xlf/Beingbeyond_D1")
+_ROOT = os.environ.get("BEINGBEYOND_PATH", "$HOME/Beingbeyond_D1")
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 

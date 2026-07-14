@@ -229,7 +229,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Convert D1 Zarr dataset to LeRobot format"
     )
-    parser.add_argument("--input", default="/home/xlf/datasets/d1_teleop",
+    parser.add_argument("--input", default="$HOME/datasets/d1_teleop",
                         help="Path to Zarr dataset directory")
     parser.add_argument("--output", required=True,
                         help="Output directory for LeRobot dataset")

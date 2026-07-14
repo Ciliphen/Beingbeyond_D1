@@ -9,7 +9,7 @@ echo "[soma_d1] starting..."
 PKG_ROOT="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$PKG_ROOT"
 
-PYTHON="${BLOCK_GRASP_PYTHON:-/home/xlf/miniconda3/envs/bb_d1_robonix/bin/python3}"
+PYTHON="${BLOCK_GRASP_PYTHON:-$HOME/miniconda3/envs/bb_d1_robonix/bin/python3}"
 ROBONIX_API="$(rbnx path robonix-api)"
 
 # gRPC stubs (soma_pb2, geometry_msgs_pb2, robonix_contracts_pb2_grpc) live

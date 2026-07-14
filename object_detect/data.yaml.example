@@ -3,7 +3,7 @@
 #
 # See: https://docs.ultralytics.com/datasets/obb/
 
-path: /home/xlf/Beingbeyond_D1/object_detect/dataset
+path: $HOME/Beingbeyond_D1/object_detect/dataset
 train: images/train
 val: images/val
 
