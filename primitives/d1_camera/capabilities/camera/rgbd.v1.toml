@@ -1,9 +1,0 @@
-# Get a synchronised RGB-D image pair on demand.
-[contract]
-id      = "beingbeyond/primitive/camera/rgbd"
-version = "1"
-kind    = "primitive"
-idl     = "camera/srv/GetRGBDImage.srv"
-
-[mode]
-type = "rpc"

@@ -1,9 +1,0 @@
-# Take one depth frame on demand.
-[contract]
-id      = "beingbeyond/primitive/camera/depth_snapshot"
-version = "1"
-kind    = "primitive"
-idl     = "camera/srv/GetCameraImage.srv"
-
-[mode]
-type = "rpc"

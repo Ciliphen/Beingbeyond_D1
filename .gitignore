@@ -88,3 +88,4 @@ block_grasp/handeye_calib.npz
 
 # Local dataset config (use data.yaml.example as template)
 object_detect/data.yaml
+.claude/

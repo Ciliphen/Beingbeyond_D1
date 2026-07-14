@@ -1,9 +1,0 @@
-# Query camera intrinsics (fx, fy, cx, cy, distortion, resolution).
-[contract]
-id      = "beingbeyond/primitive/camera/intrinsics"
-version = "1"
-kind    = "primitive"
-idl     = "camera/srv/GetCameraIntrinsics.srv"
-
-[mode]
-type = "rpc"

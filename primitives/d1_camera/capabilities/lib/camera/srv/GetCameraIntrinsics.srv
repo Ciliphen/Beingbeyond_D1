@@ -1,8 +1,0 @@
----
-float32 fx
-float32 fy
-float32 cx
-float32 cy
-float32[5] distortion
-uint32 width
-uint32 height
