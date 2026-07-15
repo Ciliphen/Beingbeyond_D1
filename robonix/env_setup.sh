@@ -27,14 +27,10 @@ echo "[env_setup] installing D1 SDK (cp310 wheel)"
 [ -f "${SDK_WHEEL}" ] || { echo "SDK wheel not found: ${SDK_WHEEL}" >&2; exit 1; }
 "${ENV_PY}" -m pip install "${SDK_WHEEL}"
 
-echo "[env_setup] installing grasp deps"
-"${ENV_PY}" -m pip install \
-    pyrealsense2 ultralytics opencv-python scipy numpy
-
-echo "[env_setup] installing robonix skill deps"
-"${ENV_PY}" -m pip install \
-    "mcp>=1.0" "fastmcp>=3" uvicorn "grpcio>=1.50" "grpcio-tools>=1.50" \
-    "protobuf>=4" "pyyaml>=6"
+echo "[env_setup] installing pinned deps from requirements.txt"
+REQ="$(dirname "$(readlink -f "$0")")/requirements.txt"
+[ -f "${REQ}" ] || { echo "requirements.txt not found: ${REQ}" >&2; exit 1; }
+"${ENV_PY}" -m pip install -r "${REQ}"
 
 echo "[env_setup] verifying imports"
 "${ENV_PY}" - <<'PY'
