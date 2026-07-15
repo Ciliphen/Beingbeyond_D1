@@ -9,10 +9,15 @@ Owns the joint-level robonix/primitive/hand/* contracts, served over gRPC:
   robonix/primitive/hand/move_joint               rpc   set axis positions by name
   robonix/primitive/hand/set_joint_speed_limits   rpc   per-axis speed limit by name
   robonix/primitive/hand/set_joint_torque_limits  rpc   per-axis torque limit by name
+  robonix/primitive/hand/get_state                rpc   read current axis positions [0,1]
 
 Wraps beingbeyond_d1_sdk.dex_hand.DexHand directly. All values are normalized
 [0,1]; for position 1=closed/0=open, for speed/torque 1=max/0=min. The hand has
 6 control axes (see _AXES), each self-describing via info.
+
+State readback uses the get_state rpc (the D1 deploy has no ROS backend, so the
+state_joint / state_finger topic_out streams are not served; get_state is the
+axis-level on-demand equivalent).
 
 Not provided: state_joint / state_finger (topic_out — need a ROS backend the D1
 deploy does not run) and the finger-level move_finger / set_finger_* contracts
@@ -165,6 +170,24 @@ def set_joint_torque_limits(request, context):
         except Exception as exc:  # noqa: BLE001
             return hand_pb2.SetJointTorqueLimits_Response(ok=False, message=f"set_torque failed: {exc}")
     return hand_pb2.SetJointTorqueLimits_Response(ok=True, message="")
+
+
+@d1_hand.grpc("robonix/primitive/hand/get_state")
+def get_state(request, context):
+    """Read current control-axis positions (normalized [0,1], 1=closed), in
+    info's axis order. Contract: robonix/primitive/hand/get_state."""
+    _ = request, context
+    with _lock:
+        hand = _hand
+        if hand is None:
+            return hand_pb2.GetJointState_Response(ok=False, message="hand not initialized")
+        try:
+            pos = hand.read_joint_pos()
+        except Exception as exc:  # noqa: BLE001
+            return hand_pb2.GetJointState_Response(ok=False, message=f"read state failed: {exc}")
+    return hand_pb2.GetJointState_Response(
+        ok=True, message="", positions=[float(v) for v in pos[:_NUM]]
+    )
 
 
 # ── lifecycle ─────────────────────────────────────────────────────────────────

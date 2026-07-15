@@ -6,7 +6,7 @@ Owns robonix/primitive/camera/* for the D1's head-mounted RealSense. The D1
 robonix deployment has no ROS backend, so this exposes only the on-demand
 rpc/MCP snapshot contracts (not the rgb/depth/intrinsics topic_out streams):
 
-  robonix/primitive/camera/snapshot        rpc (MCP)  one RGB frame as JPEG Image
+  robonix/primitive/camera/snapshot        rpc (gRPC) one RGB frame as JPEG Image
   robonix/primitive/camera/depth_snapshot  rpc (MCP)  one depth frame, normalized JPEG
   robonix/primitive/camera/driver          rpc        lifecycle (wired to on_init)
 
@@ -39,6 +39,14 @@ import builtin_interfaces_mcp        # noqa: E402
 import std_msgs_mcp                  # noqa: E402
 from sensor_msgs_mcp import Image    # noqa: E402
 from std_msgs_mcp import Empty       # noqa: E402
+
+# gRPC codegen products (same proto_gen dir) — snapshot is served over gRPC so
+# programmatic consumers (e.g. the block_grasp skill) get a synchronous
+# sensor_msgs/Image without an MCP client. depth_snapshot stays MCP below.
+import builtin_interfaces_pb2        # noqa: E402
+import camera_pb2                    # noqa: E402
+import sensor_msgs_pb2               # noqa: E402
+import std_msgs_pb2                  # noqa: E402
 
 # ── shared state ──────────────────────────────────────────────────────────────
 _camera = None
@@ -90,18 +98,44 @@ def _depth_to_image_mcp(depth_m: np.ndarray, frame_id: str) -> Image:
     return _rgb_to_image_mcp(gray, frame_id)
 
 
-# ── MCP snapshot tools ────────────────────────────────────────────────────────
-@d1_camera.mcp("robonix/primitive/camera/snapshot")
-def snapshot(msg: Empty) -> Image:
-    """拍一张头部相机 RGB 图（按需单帧）。返回 JPEG 编码的 sensor_msgs/Image
-    （data 为 base64）。Contract: robonix/primitive/camera/snapshot."""
-    _ = msg
+def _rgb_to_image_pb2(rgb: np.ndarray, frame_id: str) -> "sensor_msgs_pb2.Image":
+    """Encode an RGB uint8 (H, W, 3) array as a JPEG sensor_msgs/Image (pb2)."""
+    from PIL import Image as PILImage
+
+    buf = BytesIO()
+    PILImage.fromarray(np.ascontiguousarray(rgb)).save(buf, format="JPEG", quality=85)
+    jpg = buf.getvalue()
+    h, w = rgb.shape[:2]
+    now = time.time()
+    return sensor_msgs_pb2.Image(
+        header=std_msgs_pb2.Header(
+            stamp=builtin_interfaces_pb2.Time(
+                sec=int(now), nanosec=int((now % 1) * 1e9) % 1_000_000_000
+            ),
+            frame_id=frame_id,
+        ),
+        height=h,
+        width=w,
+        encoding="jpeg",
+        is_bigendian=0,
+        step=len(jpg),
+        data=jpg,
+    )
+
+
+# ── snapshot (gRPC) + depth_snapshot (MCP) ──────────────────────────────────────
+@d1_camera.grpc("robonix/primitive/camera/snapshot")
+def snapshot(request, context):
+    """拍一张头部相机 RGB 图（按需单帧），返回 JPEG 编码的 sensor_msgs/Image。
+    Served over gRPC for synchronous programmatic consumers.
+    Contract: robonix/primitive/camera/snapshot."""
+    _ = request, context
     with _lock:
         cam = _camera
     if cam is None:
-        raise RuntimeError("camera not initialized — Driver(CMD_INIT) failed or never ran")
+        return camera_pb2.GetCameraImage_Response()
     rgb, _depth = cam.get_aligned_frames(filtered=False)
-    return _rgb_to_image_mcp(rgb, _frame_id)
+    return camera_pb2.GetCameraImage_Response(image=_rgb_to_image_pb2(rgb, _frame_id))
 
 
 @d1_camera.mcp("robonix/primitive/camera/depth_snapshot")

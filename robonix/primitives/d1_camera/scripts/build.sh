@@ -10,7 +10,10 @@ PKG="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 ENV_PY="${BLOCK_GRASP_PYTHON:-$HOME/miniconda3/envs/bb_d1_robonix/bin/python3}"
 [ -x "$ENV_PY" ] && export PATH="$(dirname "$ENV_PY"):$PATH"
 
-FLAGS=()
+# --mcp: depth_snapshot is still an MCP contract, so generate the MCP
+# dataclasses (sensor_msgs_mcp, std_msgs_mcp, builtin_interfaces_mcp) too.
+# snapshot is served over gRPC (proto_gen) for the block_grasp skill.
+FLAGS=(--mcp)
 [[ "${RBNX_BUILD_CLEAN:-}" == "1" ]] && FLAGS+=(--clean)
 rbnx codegen -p "$PKG" "${FLAGS[@]}"
 echo "[d1_camera] build done"

@@ -22,5 +22,6 @@ capabilities:
   - name: robonix/primitive/arm/move_joint
   - name: robonix/primitive/arm/get_state
   - name: robonix/primitive/arm/move_pose
+  - name: robonix/primitive/arm/set_head
 
 depends: []

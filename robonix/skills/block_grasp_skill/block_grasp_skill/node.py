@@ -12,8 +12,10 @@ Tools:
   - move_home()                              — open hand + park arm clear of the camera
 
 Follows the roboarm_skill pattern: a raw FastMCP app attached to the Skill,
-capabilities declared manually after bootstrap. Hardware (arm, hand, camera,
-YOLO) is initialised lazily on first tool call so bootstrap stays fast.
+capabilities declared manually after bootstrap. On first tool call the skill
+connects the d1 arm/hand/camera *primitives* over gRPC (the primitives own the
+hardware) and drives the grasp pipeline through them — it never opens the serial
+link / CAN bus / RealSense itself. IK/FK/YOLO stay local (pure compute).
 """
 from __future__ import annotations
 
@@ -64,10 +66,11 @@ def _find_best_model() -> str:
 
 
 def _ensure_controller():
-    """Late-init the grasp controller on first use. This opens the camera,
-    the head-arm serial link, the dexterous-hand CAN bus, loads YOLO, and
-    moves the arm to a safe posture — so it is deliberately deferred out of
-    bootstrap. Hardware/env parameters come from environment variables."""
+    """Late-init the grasp controller on first use. Discovers and connects the
+    d1 arm/hand/camera *primitives* via atlas (the primitives own the hardware;
+    the skill never opens the serial link / CAN bus / RealSense itself), loads
+    YOLO, and moves the arm to a safe posture — so it is deferred out of
+    bootstrap. Kinematics/IK/YOLO stay local (pure compute)."""
     global _controller
     if _controller is not None:
         return _controller
@@ -75,24 +78,24 @@ def _ensure_controller():
         if _controller is not None:
             return _controller
         from block_grasp.grasp_controller import BlockGraspController
+        from block_grasp_skill.primitive_clients import connect_primitives
 
         model_path = os.environ.get("BLOCK_GRASP_MODEL") or _find_best_model()
+        print("[block_grasp_skill] connecting arm/hand/camera primitives via atlas ...",
+              flush=True)
+        arm, hand, camera = connect_primitives(skill)
         print(f"[block_grasp_skill] initialising controller (model={model_path})",
               flush=True)
         _controller = BlockGraspController(
             model_path=model_path,
-            hand_type=os.environ.get("BLOCK_GRASP_HAND_TYPE", "right"),
-            hand_can=os.environ.get("BLOCK_GRASP_HAND_CAN", "can0"),
-            arm_dev=os.environ.get("BLOCK_GRASP_ARM_DEV", "/dev/ttyUSB0"),
-            arm_baud=int(os.environ.get("BLOCK_GRASP_ARM_BAUD", "1000000")),
             urdf_path=os.environ.get("BLOCK_GRASP_URDF", ""),
-            cam_width=int(os.environ.get("BLOCK_GRASP_CAM_WIDTH", "1280")),
-            cam_height=int(os.environ.get("BLOCK_GRASP_CAM_HEIGHT", "720")),
-            cam_fps=int(os.environ.get("BLOCK_GRASP_CAM_FPS", "30")),
             device=os.environ.get("BLOCK_GRASP_DEVICE", ""),
             headless=True,
             auto_grasp=False,
             show_depth=False,
+            robot=arm,
+            hand=hand,
+            camera=camera,
         )
         print("[block_grasp_skill] controller ready", flush=True)
         return _controller

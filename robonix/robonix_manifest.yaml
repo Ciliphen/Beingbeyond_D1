@@ -1,0 +1,60 @@
+name: block_grasp_deploy
+
+env:
+  LOG: "INFO"
+
+system:
+  atlas:
+    listen: 127.0.0.1:50051
+    log: info
+  executor:
+    listen: 127.0.0.1:50061
+    log: info
+  pilot:
+    listen: 127.0.0.1:50071
+    log: info
+    vlm:
+      upstream: http://token-hub.lol/v1
+      api_key: ${VLM_API_KEY}
+      model: gpt-4o-mini-eco
+      api_format: openai
+  liaison:
+    listen: 127.0.0.1:50081
+    log: info
+  memory: []
+
+# Hardware primitives own the D1 arm/hand/camera. The block_grasp skill consumes
+# their contracts over gRPC (arm move_joint/get_state/set_head, hand
+# move_joint/get_state, camera snapshot) and no longer opens hardware directly.
+# The arm + head share /dev/ttyUSB0, so d1_arm owns that serial link (head
+# positioning via arm/set_head); the hand is on CAN, the camera is a RealSense.
+primitive:
+  - name: d1_arm
+    path: primitives/d1_arm
+    config:
+      dev: /dev/ttyUSB0
+      baudrate: 1000000
+      # urdf_path: ""      # empty → SDK default
+      ik_pos_tol: 0.05
+  - name: d1_hand
+    path: primitives/d1_hand
+    config:
+      hand_type: right
+      can_iface: can0
+      baudrate: 1000000
+  - name: d1_camera
+    path: primitives/d1_camera
+    config:
+      width: 1280
+      height: 720
+      fps: 30
+      frame_id: camera
+
+# Soma (D1 body model) is a built-in system component, NOT a service package.
+# rbnx boot auto-loads the sidecar soma.yaml next to this manifest
+# (robonix/soma.yaml) and serves it via robonix/system/soma/get_yaml + get_urdf.
+service: []
+
+skill:
+  - name: block_grasp
+    path: skills/block_grasp_skill

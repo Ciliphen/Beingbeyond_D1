@@ -22,5 +22,6 @@ capabilities:
   - name: robonix/primitive/hand/move_joint
   - name: robonix/primitive/hand/set_joint_speed_limits
   - name: robonix/primitive/hand/set_joint_torque_limits
+  - name: robonix/primitive/hand/get_state
 
 depends: []

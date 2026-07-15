@@ -153,6 +153,10 @@ class BlockGraspController:
         headless: bool = False,
         auto_grasp: bool = False,
         show_depth: bool = True,
+        *,
+        robot=None,
+        hand=None,
+        camera=None,
     ) -> None:
         """Initialise all hardware, models, and kinematics.
 
@@ -171,6 +175,14 @@ class BlockGraspController:
             auto_grasp: If True, automatically grasp detected blocks.
                         If False, press SPACE to trigger grasp.
             show_depth: If True, show/save the colourised depth view.
+            robot:      Injected arm handle (HeadArmRobot-like). When given, the
+                        SDK head-arm link is NOT opened — used to route arm I/O
+                        through the robonix arm primitive instead of the serial.
+            hand:       Injected hand handle (DexHand-like). When given, the CAN
+                        hand is NOT opened.
+            camera:     Injected camera handle (RealSenseCamera-like). When given,
+                        the RealSense is NOT opened. Kinematics/IK/YOLO stay local
+                        (pure compute, no hardware).
         """
         self._headless = headless
         self._auto_grasp = auto_grasp
@@ -203,25 +215,37 @@ class BlockGraspController:
               f"z_table={self._z_table:.3f}")
 
         # ── Perception ─────────────────────────────────────────────────
-        print("[Init] Opening RealSense camera ...")
-        self._camera = RealSenseCamera(
-            width=cam_width, height=cam_height, hz=cam_fps
-        )
+        if camera is not None:
+            print("[Init] Using injected camera handle")
+            self._camera = camera
+        else:
+            print("[Init] Opening RealSense camera ...")
+            self._camera = RealSenseCamera(
+                width=cam_width, height=cam_height, hz=cam_fps
+            )
 
         print(f"[Init] Loading YOLO model from {model_path} ...")
         self._model = load_model(model_path, device=device)
 
         # ── Control: arm + head ─────────────────────────────────────────
-        print(f"[Init] Opening head–arm on {arm_dev} ...")
-        self._robot = HeadArmRobot(
-            urdf_path=urdf_path, dev=arm_dev, baudrate=arm_baud
-        )
+        if robot is not None:
+            print("[Init] Using injected arm handle")
+            self._robot = robot
+        else:
+            print(f"[Init] Opening head–arm on {arm_dev} ...")
+            self._robot = HeadArmRobot(
+                urdf_path=urdf_path, dev=arm_dev, baudrate=arm_baud
+            )
 
         # ── Control: dexterous hand ─────────────────────────────────────
-        print(f"[Init] Opening dexterous hand on {hand_can} ({hand_type}) ...")
-        self._hand = DexHand(
-            hand_type=hand_type, can_iface=hand_can, baudrate=1_000_000
-        )
+        if hand is not None:
+            print("[Init] Using injected hand handle")
+            self._hand = hand
+        else:
+            print(f"[Init] Opening dexterous hand on {hand_can} ({hand_type}) ...")
+            self._hand = DexHand(
+                hand_type=hand_type, can_iface=hand_can, baudrate=1_000_000
+            )
 
         # ── Kinematics ──────────────────────────────────────────────────
         print("[Init] Setting up kinematics ...")

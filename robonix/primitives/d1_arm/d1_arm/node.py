@@ -9,6 +9,7 @@ Owns the robonix/primitive/arm/* contracts, served over gRPC:
   robonix/primitive/arm/move_joint  rpc   set arm joint positions (rad, absolute)
   robonix/primitive/arm/get_state   rpc   read arm joint positions + velocities (rad)
   robonix/primitive/arm/move_pose   rpc   Cartesian EE pose (xyz + rpy) via SDK IK
+  robonix/primitive/arm/set_head    rpc   set the 2 head joints (yaw,pitch), block until reached
 
 Wraps beingbeyond_d1_sdk.head_arm.HeadArmRobot directly for the joint interface
 and beingbeyond_d1_sdk.pin_kinematics.D1Kinematics for move_pose's inverse
@@ -16,12 +17,13 @@ kinematics. Joint values are absolute radians (unlike the hand's normalized
 [0,1]).
 
 The HeadArm chain is 8 joints: [0]=joint_7_head_yaw, [1]=joint_8_head_pitch,
-[2..7]=joint_1..joint_6. This primitive exposes ONLY the 6 arm joints; the 2
-head joints share the same serial link and are read + held at their current
-pose on every command (they get their own primitive later).
+[2..7]=joint_1..joint_6. This primitive exposes the 6 arm joints for motion; the
+2 head joints share the same serial link and are read + held at their current
+pose on every arm command. Head positioning is offered separately via set_head
+(there is no standalone head primitive — the serial link is owned here).
 
 Not provided: state_joint (topic_out — needs a ROS backend the D1 deploy does
-not run; replaced here by the get_state rpc) and any head control.
+not run; replaced here by the get_state rpc).
 """
 from __future__ import annotations
 
@@ -177,6 +179,32 @@ def move_pose(request, context):
         position_error=float(err),
         arm_solution=[float(v) for v in q_as],
     )
+
+
+@d1_arm.grpc("robonix/primitive/arm/set_head")
+def set_head(request, context):
+    """Set the 2 head joints (yaw, pitch) to absolute radians and block until
+    reached; the 6 arm joints are held at their current pose. Rejects non-finite
+    values. ok=true = reached. Contract: robonix/primitive/arm/set_head."""
+    _ = context
+    yaw, pitch = request.yaw, request.pitch
+    if not (math.isfinite(yaw) and math.isfinite(pitch)):
+        return arm_pb2.SetHead_Response(
+            ok=False, message=f"non-finite head angle: yaw={yaw} pitch={pitch}"
+        )
+    with _lock:
+        robot = _robot
+        if robot is None:
+            return arm_pb2.SetHead_Response(ok=False, message="arm not initialized")
+        try:
+            full = list(robot.get_positions())  # 8-vector, head + arm
+            full[0] = float(yaw)    # joint_7_head_yaw
+            full[1] = float(pitch)  # joint_8_head_pitch
+            robot.set_positions(full)
+            robot.wait_until_reached(full, active_joint_indices=[0, 1])
+        except Exception as exc:  # noqa: BLE001
+            return arm_pb2.SetHead_Response(ok=False, message=f"set head failed: {exc}")
+    return arm_pb2.SetHead_Response(ok=True, message="")
 
 
 # ── lifecycle ─────────────────────────────────────────────────────────────────

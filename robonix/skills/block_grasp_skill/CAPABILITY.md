@@ -22,9 +22,29 @@ Beingbeyond_D1 repo.
 - `reset_stack()` — clear stacking state.
 - `move_home()` — open the hand and park the arm clear of the camera.
 
+## Architecture
+
+The skill is a pure robonix **consumer**: it never opens hardware itself. On the
+first tool call it discovers and connects the D1 primitives over gRPC and drives
+the grasp pipeline through their contracts:
+
+- `d1_arm` — `arm/move_joint` (6 arm joints), `arm/get_state`, `arm/set_head`
+  (position the head to the hand-eye calibration pose). The skill keeps its own
+  IK/FK (pure compute); only joint commands/reads cross the wire.
+- `d1_hand` — `hand/move_joint` (open/grasp finger poses), `hand/get_state`
+  (grasp-close confirmation).
+- `d1_camera` — `camera/snapshot` (one RGB frame; grasping uses 2D homography,
+  no depth).
+
+The three primitives must be deployed alongside the skill — see the
+`primitive:` block in `../robonix_manifest.yaml`. Hardware parameters (serial
+dev, CAN iface, camera resolution) are set there as each primitive's `config:`,
+NOT via skill env vars.
+
 ## Hardware / environment
 
-- D1 head-arm (serial) + Linker dexterous hand (CAN) + head-mounted RealSense.
+- D1 head-arm (serial) + Linker dexterous hand (CAN) + head-mounted RealSense,
+  owned by the `d1_arm` / `d1_hand` / `d1_camera` primitives.
 - Requires hand-eye calibration `block_grasp/handeye_calib.npz` and a YOLO-OBB
   weight under `object_detect/runs/*/weights/best.pt`.
 - Runs on a Python 3.10 env with the grasp stack + robonix/mcp deps
@@ -37,12 +57,11 @@ Beingbeyond_D1 repo.
 | BEINGBEYOND_PATH | $HOME/Beingbeyond_D1 | Repo root (import path) |
 | BLOCK_GRASP_PYTHON | .../envs/bb_d1_robonix/bin/python3 | Python 3.10 interpreter |
 | BLOCK_GRASP_MODEL | auto (newest best.pt) | YOLO-OBB weight path |
-| BLOCK_GRASP_HAND_TYPE | right | Dexterous hand side |
-| BLOCK_GRASP_HAND_CAN | can0 | Hand CAN interface |
-| BLOCK_GRASP_ARM_DEV | /dev/ttyUSB0 | Head-arm serial device |
-| BLOCK_GRASP_ARM_BAUD | 1000000 | Head-arm serial baud |
-| BLOCK_GRASP_CAM_WIDTH / _HEIGHT / _FPS | 1280 / 720 / 30 | Camera config |
+| BLOCK_GRASP_URDF | (SDK default) | URDF for local IK/FK |
+| BLOCK_GRASP_DEVICE | auto | Torch device for YOLO |
 | ROBONIX_ATLAS | 127.0.0.1:50051 | Atlas control plane |
 
-Tuning constants (Z offsets, IK, hand poses, stack position) live in
+Hardware I/O parameters (hand side/CAN, arm serial dev/baud, camera resolution)
+live in the primitives' `config:` in `../robonix_manifest.yaml`. Tuning constants
+(Z offsets, IK, hand poses, head calibration pose, stack position) live in
 `block_grasp/config.py`.
