@@ -4,7 +4,7 @@ import math, os, sys, time
 import cv2, numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from clients.camera import D1CameraPrimitive
+from vision import RealSenseCamera
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 
@@ -35,13 +35,13 @@ def _on_mouse(event, x, y, flags, param):
     if event == cv2.EVENT_LBUTTONDOWN:
         param["uv"] = (x, y)
 
-cam = D1CameraPrimitive(width=1280, height=720, fps=30)
+cam = RealSenseCamera(width=1280, height=720, hz=30)
 cv2.namedWindow("Test Calib", cv2.WINDOW_NORMAL)
 cv2.setMouseCallback("Test Calib", _on_mouse, click)
 
 try:
     while True:
-        rgb = cam.snapshot()
+        rgb, _ = cam.get_aligned_frames(filtered=False)
         vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         if click["uv"] is not None:
@@ -55,6 +55,6 @@ try:
         if cv2.waitKey(5) & 0xFF == 27:
             break
 finally:
-    cam.close()
+    cam.stop()
     robot.close()
     cv2.destroyAllWindows()

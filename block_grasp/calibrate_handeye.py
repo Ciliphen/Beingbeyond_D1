@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from clients.camera import D1CameraPrimitive
+from vision import RealSenseCamera
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
 from beingbeyond_d1_sdk.urdf_path import get_default_urdf_path
 from beingbeyond_d1_sdk.dex_hand import DexHand
@@ -192,7 +192,7 @@ def main():
     robot = _ArmBus(urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
     hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
     print("[Init] Camera ...")
-    cam = D1CameraPrimitive(width=1280, height=720, fps=30)
+    cam = RealSenseCamera(width=1280, height=720, hz=30)
 
     # ── Default setup (same as click_goto) ────────────────────────────
     print("[Init] Safe posture ...")
@@ -275,7 +275,7 @@ def main():
     try:
         while True:
             # ── Camera ────────────────────────────────────────────────
-            rgb = cam.snapshot(filtered=False)
+            rgb, _ = cam.get_aligned_frames(filtered=False)
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
             # ── Mouse ─────────────────────────────────────────────────
@@ -463,7 +463,7 @@ def main():
     finally:
         hand.open_hand()
         hand.close_can()
-        cam.close()
+        cam.stop()
         robot.close()
         cv2.destroyAllWindows()
 

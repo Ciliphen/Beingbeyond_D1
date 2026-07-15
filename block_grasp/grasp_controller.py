@@ -33,7 +33,7 @@ from scipy.spatial.transform import Rotation as R
 # Project paths — allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from clients.camera import D1CameraPrimitive
+from vision import RealSenseCamera
 from object_detect.detect import (
     detect_objects_in_frame,
     draw_box,
@@ -204,8 +204,8 @@ class BlockGraspController:
 
         # ── Perception ─────────────────────────────────────────────────
         print("[Init] Opening RealSense camera ...")
-        self._camera = D1CameraPrimitive(
-            width=cam_width, height=cam_height, fps=cam_fps
+        self._camera = RealSenseCamera(
+            width=cam_width, height=cam_height, hz=cam_fps
         )
 
         print(f"[Init] Loading YOLO model from {model_path} ...")
@@ -849,7 +849,7 @@ class BlockGraspController:
         ``PLACE_DISTANCE_THRESHOLD`` of its target is skipped. Synchronous and
         headless.
         """
-        rgb, _ = self._camera.rgbd(filtered=False)
+        rgb, _ = self._camera.get_aligned_frames(filtered=False)
         blocks = self.detect_blocks(rgb)
         if not blocks:
             return {"ok": False, "detected": 0, "grasped": False,
@@ -915,7 +915,7 @@ class BlockGraspController:
         proximity: base = block closest to ``STACK_POSITION``, mover = the
         remaining block nearest the base. Returns a JSON-serialisable result.
         """
-        rgb, _ = self._camera.rgbd(filtered=False)
+        rgb, _ = self._camera.get_aligned_frames(filtered=False)
         blocks = self.detect_blocks(rgb)
         if self._stacked:
             return {"ok": False, "detected": len(blocks), "grasped": False,
@@ -1052,7 +1052,7 @@ class BlockGraspController:
                 # ── Capture (RGB + depth) ───────────────────────────────
                 # Grasping uses 2D homography and ignores depth; depth is
                 # captured only for the visualisation window below.
-                rgb, depth = self._camera.rgbd(filtered=False)
+                rgb, depth = self._camera.get_aligned_frames(filtered=False)
 
                 # While a grasp is running in the background thread, the main
                 # thread must NOT touch the robot (detection reads the arm pose
@@ -1201,7 +1201,7 @@ class BlockGraspController:
         except Exception:
             pass
         try:
-            self._camera.close()
+            self._camera.stop()
         except Exception:
             pass
 

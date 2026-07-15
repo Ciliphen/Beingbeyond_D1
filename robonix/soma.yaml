@@ -1,0 +1,128 @@
+# BeingBeyond D1 body model — served by the built-in Soma v2 system component.
+# `rbnx boot` auto-injects this file as soma's robot_yaml because it sits next
+# to robonix_manifest.yaml.
+#
+# What soma actually parses (system/soma/src/store.rs::MinimalSomaDoc):
+#   - urdf.path          (resolved relative to this file; must exist)
+#   - robot.id           (required, non-empty)
+#   - robot.footprint    (optional; validated ≥3 pts, must enclose origin)
+# Everything else (dimensions, mass_kg, tree, description) is served verbatim
+# via robonix/system/soma/get_yaml and consumed by Pilot as LLM body context.
+# Schema follows the syswonder robot-agilex-piper convention (tree / provided_by
+# / manipulator / sensor{placement} / human_label) that Pilot's soma_context
+# prompt expects.
+
+urdf:
+  # Relative to this file's directory. The repo ships the same D1 URDF that
+  # beingbeyond_d1_sdk bundles, with meshes alongside under assets/.
+  path: ../assets/beingbeyond_d1/robot_right_hand.urdf
+  root_link: link_base
+  model_name: beingbeyond_d1
+
+robot:
+  id: beingbeyond_d1
+  display_name: "BeingBeyond D1 fixed-base 6-DOF arm with dexterous hand and head RGB-D camera"
+  family: fixed_single_arm_desktop
+  root_part: base
+  # NOTE: dimensions/mass_kg are NOT parsed by soma — served raw as LLM context.
+  dimensions: { length_m: 0.25, width_m: 0.30, height_m: 0.60 }
+  mass_kg: 5.0
+  footprint:
+    base_frame: link_base
+    # Small static base hull (0.20 m square, CCW) — D1 is a fixed-base arm with
+    # no mobile chassis, so this is its mount footprint, not a drivable base.
+    points:
+      - [0.10, 0.10]
+      - [0.10, -0.10]
+      - [-0.10, -0.10]
+      - [-0.10, 0.10]
+
+# Semantic body tree (served raw for Pilot). link_base is the shared root; the
+# arm and the head branch off it. `provided_by` is intentionally empty until the
+# matching SDK-backed primitives are built under primitives/ and listed in
+# robonix_manifest.yaml — the inline comments record the intended contracts and
+# provider_id (= the future primitive package `name`).
+tree:
+  id: base
+  part_type: fixed_base
+  human_label: "固定底座（桌面安装，无移动/导航能力）"
+  link: link_base
+  provided_by: []
+  children:
+    - id: arm
+      part_type: manipulator
+      human_label: "6 自由度机械臂"
+      link: link_base
+      manipulator:
+        dof: 6
+        base_link: link_base
+        end_effector_link: ee
+        joints: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
+        # TODO: measured reach / rated payload.
+        reach_m: 0.60
+        max_payload_kg: 1.0
+      # TODO(d1_arm primitive): robonix/primitive/arm/* does not exist in
+      # robonix/capabilities yet; define it (info / move_joint / state_joint,
+      # consistent with the hand contracts) when wrapping the HeadArm SDK.
+      #   - { contract: robonix/primitive/arm/info,        provider_id: d1_arm }
+      #   - { contract: robonix/primitive/arm/move_joint,  provider_id: d1_arm }
+      #   - { contract: robonix/primitive/arm/state_joint, provider_id: d1_arm }
+      provided_by: []
+      children:
+        - id: hand
+          part_type: end_effector
+          human_label: "五指灵巧手（Linker，CAN 总线）"
+          link: hand_base_link
+          end_effector:
+            modality: dexterous_hand
+            dof: 6
+            fingers: [thumb, index, middle, ring, pinky]
+            # TODO: rated grasp payload.
+            max_payload_kg: 0.5
+          # TODO(d1_hand primitive): DexHand SDK → these existing contracts
+          # (robonix/capabilities/primitive/hand/*):
+          #   - { contract: robonix/primitive/hand/info,        provider_id: d1_hand }
+          #   - { contract: robonix/primitive/hand/move_joint,  provider_id: d1_hand }
+          #   - { contract: robonix/primitive/hand/state_joint, provider_id: d1_hand }
+          provided_by: []
+    - id: head
+      part_type: pan_tilt
+      human_label: "2 自由度头部云台（偏航 + 俯仰）"
+      link: link_head_base
+      dof: 2
+      joints: [joint_7_head_yaw, joint_8_head_pitch]
+      provided_by: []
+      children:
+        - id: head_camera
+          part_type: sensor
+          human_label: "头部 Intel RealSense D435i RGB-D 相机（俯视工作台）"
+          link: camera
+          sensor:
+            modality: rgbd
+            placement: head          # Pilot matches requested viewpoint against this.
+            resolution: [1280, 720]
+            framerate_hz: 30
+            depth_range_m: [0.2, 3.0]
+          # TODO(d1_camera primitive): RealSense SDK → existing contracts
+          # (robonix/capabilities/primitive/camera/*). snapshot/depth_snapshot
+          # are rpc; rgb/depth/intrinsics are topic_out (need a ROS backend the
+          # D1 deploy does not currently run).
+          #   - { contract: robonix/primitive/camera/snapshot,       provider_id: d1_camera }
+          #   - { contract: robonix/primitive/camera/depth_snapshot, provider_id: d1_camera }
+          #   - { contract: robonix/primitive/camera/intrinsics,     provider_id: d1_camera }
+          provided_by: []
+
+description:
+  summary: "BeingBeyond D1 桌面机器人：固定底座 6 自由度机械臂 + 2 自由度头部云台 + 五指灵巧手 + 头部 RGB-D 相机。当前部署提供 YOLO-OBB 积木抓取技能（block_grasp）。"
+  can_do:
+    - "用五指灵巧手抓取桌面积木并放到指定位置。"
+    - "把一个积木叠到另一个积木上。"
+    - "通过头部 RGB-D 相机俯视观察桌面。"
+  cannot_do:
+    - "移动底盘或导航——D1 是固定底座，没有轮子/底盘。"
+    - "从头部相机以外的视角观察（无腕部相机、无其它视角传感器）。"
+    - "抓取超出机械臂工作范围的物体。"
+  notes:
+    - "Soma v2 只把本文件和引用的 URDF 作为原始文本服务；primitive/skill 的启动由 robonix_manifest.yaml 驱动。"
+    - "机体部件（arm/hand/head_camera）的 primitive 尚未接入：manifest 的 primitive 列表为空，各部件 provided_by 也留空。待 SDK 包装成原语后，在对应部件的 provided_by 和 manifest 里同步声明。"
+    - "抓取能力来自 block_grasp 技能（运行时经 atlas 注册），不在本文件的机体树中声明。"

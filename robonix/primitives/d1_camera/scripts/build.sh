@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build phase: run rbnx codegen so the soma gRPC servicer stubs + message
-# classes (soma_pb2, geometry_msgs_pb2) are generated under rbnx-build/.
+# Build phase: run rbnx codegen so the camera gRPC stubs + MCP dataclasses
+# (sensor_msgs_mcp, std_msgs_mcp, builtin_interfaces_mcp) are generated under
+# rbnx-build/codegen/.
 set -euo pipefail
 PKG="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
@@ -9,5 +10,7 @@ PKG="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 ENV_PY="${BLOCK_GRASP_PYTHON:-$HOME/miniconda3/envs/bb_d1_robonix/bin/python3}"
 [ -x "$ENV_PY" ] && export PATH="$(dirname "$ENV_PY"):$PATH"
 
-rbnx codegen -p "$PKG"
-echo "[soma_d1] build done"
+FLAGS=()
+[[ "${RBNX_BUILD_CLEAN:-}" == "1" ]] && FLAGS+=(--clean)
+rbnx codegen -p "$PKG" "${FLAGS[@]}"
+echo "[d1_camera] build done"

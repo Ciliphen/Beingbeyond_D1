@@ -32,7 +32,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from clients.camera import D1CameraPrimitive
+from vision import RealSenseCamera
 from object_detect import detect_objects_in_frame, draw_box, load_model
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -143,9 +143,8 @@ def main():
 
     # ── Camera ─────────────────────────────────────────────────────────
     print("[Init] Camera ...")
-    cam = D1CameraPrimitive(width=args.cam_width, height=args.cam_height, fps=args.cam_fps)
-    info = cam.info()
-    print(f"       {info['model']} {info['width']}x{info['height']}@{info['fps']}fps")
+    cam = RealSenseCamera(width=args.cam_width, height=args.cam_height, hz=args.cam_fps)
+    print(f"       Intel RealSense D435i {args.cam_width}x{args.cam_height}@{args.cam_fps}fps")
 
     # ── Head ───────────────────────────────────────────────────────────
     head: Optional[HeadController] = None
@@ -214,7 +213,7 @@ def main():
     try:
         while True:
             t0 = time.time()
-            rgb = cam.snapshot(filtered=False)
+            rgb, _ = cam.get_aligned_frames(filtered=False)
 
             # Feed worker
             with lock:
@@ -263,7 +262,7 @@ def main():
     finally:
         running = False
         print(f"[Exit] {frames} frames, {saved} saved.")
-        cam.close()
+        cam.stop()
         if head:
             head.close()
         cv2.destroyAllWindows()

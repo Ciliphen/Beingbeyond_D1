@@ -9,7 +9,7 @@
 ```
 rbnx chat (Pilot, VLM)
     ↓ MCP
-block_grasp skill node (FastMCP)      ← robonix/block_grasp_skill/block_grasp_skill/node.py
+block_grasp skill node (FastMCP)      ← robonix/skills/block_grasp_skill/block_grasp_skill/node.py
     ↓ Python import
 block_grasp.grasp_controller.BlockGraspController  ← 原抓取管线（新增 grasp_once/stack_once）
     ↓
@@ -45,11 +45,11 @@ bash ~/Beingbeyond_D1/robonix/env_setup.sh      # 建 bb_d1_robonix + 装依赖�
 export VLM_BASE_URL=...   VLM_API_KEY=...   VLM_MODEL=...
 
 # 2) 构建 skill（codegen 生成 Driver 生命周期 gRPC 桩）
-cd ~/Beingbeyond_D1/robonix/block_grasp_skill
+cd ~/Beingbeyond_D1/robonix/skills/block_grasp_skill
 rbnx build -p .
 
-# 3) 启动整套（atlas + executor + pilot + skill）
-cd ../block_grasp_deploy
+# 3) 启动整套（atlas + executor + pilot + skill）；清单在 robonix/ 根目录
+cd ~/Beingbeyond_D1/robonix
 rbnx boot
 
 # 4) 另开终端验证

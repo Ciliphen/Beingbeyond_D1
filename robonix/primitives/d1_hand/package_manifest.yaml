@@ -1,0 +1,26 @@
+# D1 dexterous hand — primitive package (Linker 6-axis hand over CAN, direct/non-ROS).
+manifestVersion: 1
+
+package:
+  name: com.beingbeyond.primitive.d1_hand
+  version: 0.1.0
+  vendor: beingbeyond
+  description: D1 dexterous-hand primitive — axis-level position control + speed/torque limits over CAN.
+  license: MulanPSL-2.0
+
+build: bash scripts/build.sh
+start: bash scripts/start.sh
+
+# Joint-level (axis) rpc contracts served over gRPC. The finger-level
+# (move_finger / set_finger_*) and state_joint/state_finger (topic_out, need a
+# ROS backend the D1 deploy does not run) contracts are intentionally not
+# provided — info exposes each axis's finger+type so consumers can map fingers.
+# `driver` is the lifecycle interface (wired to on_init).
+capabilities:
+  - name: robonix/primitive/hand/driver
+  - name: robonix/primitive/hand/info
+  - name: robonix/primitive/hand/move_joint
+  - name: robonix/primitive/hand/set_joint_speed_limits
+  - name: robonix/primitive/hand/set_joint_torque_limits
+
+depends: []

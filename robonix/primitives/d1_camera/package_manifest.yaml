@@ -1,0 +1,22 @@
+# D1 head camera — primitive package (Intel RealSense D435i, direct/non-ROS).
+manifestVersion: 1
+
+package:
+  name: com.beingbeyond.primitive.d1_camera
+  version: 0.1.0
+  vendor: beingbeyond
+  description: D1 head RealSense D435i camera primitive — on-demand RGB + depth snapshots.
+  license: MulanPSL-2.0
+
+build: bash scripts/build.sh
+start: bash scripts/start.sh
+
+# Only the on-demand rpc/MCP contracts: the D1 robonix deployment has no ROS
+# backend, so the rgb/depth/intrinsics/extrinsics topic_out streams are not
+# provided. `driver` is the lifecycle interface (wired to on_init).
+capabilities:
+  - name: robonix/primitive/camera/snapshot
+  - name: robonix/primitive/camera/depth_snapshot
+  - name: robonix/primitive/camera/driver
+
+depends: []

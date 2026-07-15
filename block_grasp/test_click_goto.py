@@ -16,7 +16,7 @@ import cv2, numpy as np
 from scipy.spatial.transform import Rotation as R
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from clients.camera import D1CameraPrimitive
+from vision import RealSenseCamera
 from beingbeyond_d1_sdk.head_arm import HeadArmRobot
 from beingbeyond_d1_sdk.dex_hand import DexHand
 from beingbeyond_d1_sdk.pin_kinematics import D1Kinematics, D1KinematicsConfig
@@ -59,7 +59,7 @@ def main():
     robot = HeadArmRobot(urdf_path=urdf, dev="/dev/ttyUSB0", baudrate=1_000_000)
     hand = DexHand(hand_type="right", can_iface="can0", baudrate=1_000_000)
     print("[Init] Camera ...")
-    cam = D1CameraPrimitive(width=1280, height=720, fps=30)
+    cam = RealSenseCamera(width=1280, height=720, hz=30)
 
     # ── Safe posture first, then set head ─────────────────────────────
     print("[Init] Safe posture ...")
@@ -154,7 +154,7 @@ def main():
 
     try:
         while True:
-            rgb = cam.snapshot(filtered=False)
+            rgb, _ = cam.get_aligned_frames(filtered=False)
             vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
             # ── Handle click ──────────────────────────────────────────
@@ -277,7 +277,7 @@ def main():
     finally:
         hand.open_hand()
         hand.close_can()
-        cam.close()
+        cam.stop()
         robot.close()
         cv2.destroyAllWindows()
 
