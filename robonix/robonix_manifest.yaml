@@ -14,9 +14,9 @@ system:
     listen: 127.0.0.1:50071
     log: info
     vlm:
-      upstream: http://token-hub.lol/v1
-      api_key: ${VLM_API_KEY}
-      model: gpt-4o-mini-eco
+      upstream: https://api.deepseek.com
+      api_key: sk-2c291656ad5748f9bfcedfe162c84b5b
+      model: deepseek-v4-pro
       api_format: openai
   liaison:
     listen: 127.0.0.1:50081
@@ -58,3 +58,7 @@ service: []
 skill:
   - name: block_grasp
     path: skills/block_grasp_skill
+  # Coordinate-based pick-and-place (no vision): grasp at an absolute position,
+  # release at position + offset. Consumes d1_arm + d1_hand only (no camera).
+  - name: pick_place
+    path: skills/pick_place_skill
