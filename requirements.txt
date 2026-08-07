@@ -1,1 +1,5 @@
 pyrealsense2
+ultralytics
+opencv-python
+scipy
+roboticstoolbox-python
