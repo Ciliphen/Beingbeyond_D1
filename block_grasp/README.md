@@ -82,7 +82,7 @@ python block_grasp/run_block_grasp.py --headless  # 无显示窗口
 | 脚本 | 作用 | 产物 |
 | --- | --- | --- |
 | `calibrate_handeye.py` | 手眼标定：像素 ↔ 桌面坐标（2D 单应）。交互采点。**必做** | `handeye_calib.npz` |
-| `calibrate_sag.py` | 重力下垂补偿标定：移动到已知目标、测量实际到达点，拟合 `dZ = factor × dist²`。**可选**（默认关闭） | 写回 `config.GRAVITY_SAG_FACTOR` |
+| `calibrate_sag.py` | 重力下垂补偿标定：移动到已知目标、测量实际到达点，拟合 `dZ = factor × dist³`。**可选**（默认关闭） | 写回 `config.GRAVITY_SAG_FACTOR` |
 
 标定完成后可用 `test_click_goto.py`（点击图像 → 机械臂指尖移动到该点）快速验证坐标链路是否正确。
 

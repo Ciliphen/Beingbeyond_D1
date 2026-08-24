@@ -36,7 +36,7 @@ BLOCK_SIZE: float = 0.05               # cube side length (m)
 GRASP_Z_OFFSET: float = 0.015          # Z offset above table for grasp (m)
 
 # ── Gravity sag compensation ───────────────────────────────────────────────
-# The arm sags under its own weight when extended.  dZ = factor × dist²
+# The arm sags under its own weight when extended.  dZ = factor × dist³
 # (cantilever model).  Positive = raise target to counteract sag.
 # Start at 0.02, increase if far blocks are still too low.
 GRAVITY_SAG_FACTOR: float = 0.3      # m of sag per m³ of horizontal distance
